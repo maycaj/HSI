@@ -14,9 +14,9 @@ from matplotlib.animation import FuncAnimation
 import re
 
 # initialize filepath & number of samples
-filepath = '/Users/maycaj/Documents/HSI_III/spectrums-12-1-24_EdemaTF_imgNum.csv'
-selectedNums = [3000] # max is 49652
-iterations = 100
+filepath = '/Users/maycaj/Documents/HSI_III/spectrums-12-1-24_EdemaTF_imgNum_5.csv' # '/Users/maycaj/Documents/HSI_III/spectrums-12-1-24_EdemaTF_imgNum.csv'
+selectedNums = [3000] # max is 49652 for 11x11 patches
+iterations = 300
 
 X = np.genfromtxt(filepath, delimiter=',') #read in the .csv as a npy variable
 X = X[1:,1:] # get rid of y column and column labels
@@ -24,7 +24,7 @@ y = pd.read_csv(filepath) # pull y column
 y = y.iloc[:,0]
 y_Categories = [item.split(' ')[0] for item in y] # pull EdemaTrue or EdemaFalse
 
-def makeConfusion(y_true, y_pred, class_names):
+def plotConfusion(y_true, y_pred, class_names):
     cm = confusion_matrix(y_true, y_pred)
     plt.figure(figsize=(8, 6))
     plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
@@ -46,6 +46,7 @@ def makeConfusion(y_true, y_pred, class_names):
 accuracies = {}
 patientAccs = {}
 patientNum = []
+TP, TN, FP, FN = 0,0,0,0
 for selectedNum in selectedNums:
     for i in range(iterations): # iterate multiple times for error bars
         patientAcc = {}
@@ -118,12 +119,34 @@ for selectedNum in selectedNums:
         # do PCA dimensionality reduction
         pca = make_pipeline(StandardScaler(), PCA(n_components=30, random_state=random_state))
         n_neighbors = 5
-        knn = KNeighborsClassifier(n_neighbors=n_neighbors) # SVM and K-means also used commonly
         pca.fit(X_train, y_train) # fit method's model
-        knn.fit(pca.transform(X_train), y_train) # compute the nearest neighbor classifier on the transformed training set
-        acc_knn = knn.score(pca.transform(X_test), y_test) # compute the nearest neighbor accuracy on the transformed test set
-        # knn.fit(X_train, y_train)
-        # acc_knn = knn.score(X_test, y_test)
+        X_test_transformed = pca.transform(X_test)
+        # # plot the PCA weights
+        # plt.figure()
+        # components = pca.named_steps['pca'].components_
+        # wavelengths = [376.61,381.55,386.49,391.43,396.39,401.34,406.3,411.27,416.24,421.22,426.2,431.19,436.18,441.17,446.17,451.18,456.19,461.21,466.23,471.25,476.28,481.32,486.36,491.41,496.46,501.51,506.57,511.64,516.71,521.78,526.86,531.95,537.04,542.13,547.23,552.34,557.45,562.57,567.69,572.81,577.94,583.07,588.21,593.36,598.51,603.66,608.82,613.99,619.16,624.33,629.51,634.7,639.88,645.08,650.28,655.48,660.69,665.91,671.12,676.35,681.58,686.81,692.05,697.29,702.54,707.8,713.06,718.32,723.59,728.86,734.14,739.42,744.71,750.01,755.3,760.61,765.92,771.23,776.55,781.87,787.2,792.53,797.87,803.21,808.56,813.91,819.27,824.63,830,835.37,840.75,846.13,851.52,856.91,862.31,867.71,873.12,878.53,883.95,889.37,894.8,900.23,905.67,911.11,916.56,922.01,927.47,932.93,938.4,943.87,949.35,954.83,960.31,965.81,971.3,976.8,982.31,987.82,993.34,998.86,1004.39,1009.92,1015.45,1020.99,1026.54,1032.09,1037.65,1043.21]
+        # for i in range(3):
+        #     plt.scatter(wavelengths,components[i], label=f'Component: {i}')
+        # plt.legend()
+        # plt.title('PCA components')
+        # plt.xlabel('Band (nm)')
+        # plt.ylabel('Weight')
+        # plt.show()
+    
+
+        # fit KNN on data
+        # knn = KNeighborsClassifier(n_neighbors=n_neighbors) # SVM and K-means also used commonly
+        # knn.fit(pca.transform(X_train), y_train) # compute the nearest neighbor classifier on the transformed training set
+        # acc_knn = knn.score(pca.transform(X_test), y_test) # compute the nearest neighbor accuracy on the transformed test set
+        # y_pred = knn.predict(X_test_transformed)
+        # # knn.fit(X_train, y_train)
+        # # acc_knn = knn.score(X_test, y_test)
+
+        # fit SVM on data
+        svc = SVC(kernel='linear')
+        svc.fit(pca.transform(X_train), y_train)
+        acc_svm = svc.score(X_test_transformed, y_test)  # Evaluate SVM on transformed test data
+        y_pred = svc.predict(X_test_transformed)  # Pred
 
 
         # # Plot how much variance is explained by PCA
@@ -156,14 +179,21 @@ for selectedNum in selectedNums:
         key = str(selectedNum)
         if key not in accuracies: # make a list for the overall acc
             accuracies[key] = []
-        accuracies[key].append(acc_knn)
+        accuracies[key].append(acc_svm)
 
-        X_test_transformed = pca.transform(X_test)
         # X_test_transformed = X_test
-        y_pred = knn.predict(X_test_transformed)
         isCorrect = y_pred == y_test
-        # cm = makeConfusion(y_test, y_pred, ['False','True']) # plot confusion matrix
+        # cm = plotConfusion(y_test, y_pred, ['False','True']) # plot confusion matrix
         # plt.show()
+
+        # tally up all of the confusion matricies
+        cm = confusion_matrix(y_test, y_pred)
+        print(cm)  # Output: [[1 1], [1 2]]
+        # Keeping a sum of all of the values. 
+        TN = TN + cm[0, 0]  
+        FP = FP + cm[0, 1] 
+        FN = FN + cm[1, 0] 
+        TP = TP + cm[1, 1] 
 
         isCorrect = np.where(isCorrect,1,0)
         testIDs = IdTF[testIDXs]
@@ -189,6 +219,7 @@ for selectedNum in selectedNums:
         # plt.legend()
         # plt.show()
 
+print(f'Overall confusion: \nTrue     false: {TN} {FP} \nLabel     true: {FN} {TP} \n     Predicted Label')
         
 
 
@@ -204,7 +235,7 @@ def getErrorBars(input): # do power analysis of 1D array to get 95% CI using boo
         print('Only one input, cannot construct error bars. Setting marginOfError = 0')
         marginOfError = 0
     else:
-        for _ in range(1000): # randomly choose a subset of the data with replacement and find the average 
+        for _ in range(5000): # randomly choose a subset of the data with replacement and find the average 
             choices = np.random.choice(input, size=input.shape[0], replace=True)
             avg = np.mean(choices)
             avgs = np.append(avgs, avg)
