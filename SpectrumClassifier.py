@@ -16,10 +16,10 @@ import re
 # initialize filepath & number of samples
 filepath = '/Users/maycaj/Documents/HSI_III/spectrums-12-3-24_EdemaTF_imgNum_20.csv'  # '/Users/maycaj/Documents/HSI_III/spectrums-12-1-24_EdemaTF_imgNum.csv'
 # filepath = '/Users/maycaj/Documents/HSI_III/spectrums-12-3-24_EdemaTF_imgNum_5.csv'
-selectedNums = [3000] # how many patches in analysis max is 49652 for 11x11 patches
-iterations = 100 # how many times to repeat the analysis
+selectedNums = [4000] # how many patches in analysis max is 49652 for 11x11 patches
+iterations = 300 # how many times to repeat the analysis
 bands2ignore = 9 # number of bands to ignore (because they are noise) in the lower end of the spectrum 
-n_PCAs = [1,2,3,4,5,10,30] # number of PCA components
+n_PCAs = [30] # number of PCA components
 
 X = np.genfromtxt(filepath, delimiter=',') #read in the .csv as a npy variable
 X = X[1:,1+bands2ignore:] # get rid of y column/wavlengths below 421 and column labels
@@ -68,9 +68,10 @@ def plotPCA(components, bands2ignore, title): # plot the PCA components
     plt.xlabel('Band (nm)')
     plt.ylabel('Absolute value of Weight')
 
-accuracies = {}
-patientAccs = {}
+patchAccs = {}
+voteAccs = {}
 patientNum = []
+patientAccs = {}
 TP, TN, FP, FN = 0,0,0,0
 for n_PCA in n_PCAs:
     componentsList = []
@@ -152,7 +153,7 @@ for n_PCA in n_PCAs:
             components = pca.named_steps['pca'].components_
             components = np.abs(components)
             componentsList.append(components)
-            plotPCA(components, bands2ignore, 'PCA Components')
+            # plotPCA(components, bands2ignore, 'PCA Components')
             # plt.show()
 
 
@@ -213,6 +214,8 @@ for n_PCA in n_PCAs:
             FP = FP + cm[0, 1] 
             FN = FN + cm[1, 0] 
             TP = TP + cm[1, 1] 
+            patchAcc = (TN+TP)/(TN+TP+FN+FP)
+            print(f'Patch Acc: {patchAcc}')
 
             isCorrect = np.where(isCorrect,1,0)
             testIDs = IdTF[testIDXs]
@@ -221,19 +224,29 @@ for n_PCA in n_PCAs:
                 if testID not in patientAcc: # for each patient, add if each example was correct or not to patient Acc
                     patientAcc[testID] = []
                 patientAcc[testID].append(isCorrect[i].item())
+
+            IterationAcc = []
             for testID in patientAcc:
+                values = np.mean(np.array(patientAcc[testID]))
+                IterationAcc.append(np.array(values)) # round to get the nearest threshold as the model's overall answer for for each true or false patient 
+                patientAcc[testID] = values # patientAcc holds each patient's accuracy fpr this iteration
+            IterationAcc = np.mean(IterationAcc)
+            print(f'Patient voted Acc: {IterationAcc}') # the overall accuracy for this iteration
+
+
+            for testID in patientAcc: # patientAccs will save the patientAcc over all iterations
                 if testID not in patientAccs:
                     patientAccs[testID] = []
                 # patientAccs[testID].append(np.mean(np.array(patientAcc[testID])).item())
-                patientAccs[testID].append(np.round(np.mean(np.array(patientAcc[testID]))).item()) # round to get the nearest threshold as the model's overall answer for for each true or false patient
+                # IDacc = np.round(patientAcc[testID]) # round to get the nearest threshold as the model's overall answer for for each true or false patient
+                IDacc = patientAcc[testID]
+                patientAccs[testID].append(IDacc.item()) # patientAccs is accuracy for each patient on each iteration
 
 
             key = str(n_PCA)
-            if key not in accuracies: # make a list for the overall acc
-                accuracies[key] = []
-            acc = [value[0] for value in patientAccs.values()] # add the rounded values as the overall accuracy
-            acc = np.mean(np.array([value[0] for value in patientAccs.values()]))
-            accuracies[key].append(acc)
+            if key not in patchAccs: # make a list for the overall acc
+                patchAccs[key] = []
+            patchAccs[key].append(patchAcc) # patchAccs is average accuracy within one iteration
 
             pass
 
@@ -246,13 +259,14 @@ for n_PCA in n_PCAs:
         # plt.show()
 
 print(f'Overall confusion: \nTrue     false: {TN} {FP} \nLabel     true: {FN} {TP} \n     Predicted Label')
+print(f'Overall patch accuracy: {(TP+TN)/(TP+TN+FP+FN)}')
         
 
 avgComponents = np.zeros([componentsList[0].shape[0],componentsList[0].shape[1],len(componentsList)]) # [weight, component, trial]
 for i in range(len(componentsList)):
     avgComponents[:,:,i] = componentsList[i]
 avgComponents = np.mean(avgComponents, axis=2)
-plotPCA(avgComponents, bands2ignore, f'Average PCA iterations: {iterations} num PCA: {n_PCA}')
+# plotPCA(avgComponents, bands2ignore, f'Average PCA iterations: {iterations} num PCA: {n_PCA}')
 # plt.show()
 
 def getErrorBars(input): # do power analysis of 1D array to get 95% CI using bootstrapping
@@ -288,11 +302,18 @@ def accDict2chart(accuracies, title, xlabel): # make a bar chart with error bars
     avgAcc = np.round(np.mean(np.array(inputAvgs)),2) # find the overall accuracy and round to 2 decimal places
     ax.set_ylabel('Accuracy')
     ax.set_title(title + 'Avg Accuracy: ' + str(avgAcc))
-accDict2chart(accuracies, 'Accuracy per epoch with 95% CI', 'Number of PCA components')
+accDict2chart(patchAccs, 'Accuracy per epoch with 95% CI', 'Number of PCA components')
 accDict2chart(patientAccs, f'Examples:{selectedNum} Iterations:{iterations} PCA:{n_PCA} - patient Accuracy 95%CI', 'Patient ID Number + Edema True/False')
-plt.ion() # make it so that breakpoints don't affect if the plot is shown or not
+
+# plot the range of the accuracies to ensure that my CI is correctly constructed
+def dict2hist(accuracies, title):
+    accList = [item.item() for item in list(accuracies.values())[0]]
+    plt.figure()
+    plt.hist(accList, bins=30)
+    plt.title(title)
+    plt.xlabel('Value')
+    plt.ylabel('Frequency')
+dict2hist(patchAccs, f'Histogram patch Accuracy examples:{selectedNum} iterations: {iterations}')
+
 plt.show()
-
-
-
 print('All done!')
