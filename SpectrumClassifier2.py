@@ -15,8 +15,9 @@ import re
 
 # initialize filepath & number of samples
 filepath = '/Users/maycaj/Documents/HSI_III/1-7-25_5x5.csv'
-fracs = [1] # fraction of patches to include
-iterations = 2 # how many times to repeat the analysis
+fracs = [0.01] # fraction of patches to include
+iterations = 15 # how many times to repeat the analysis
+threshold = 0.7 # what fraction of patches of edemaTrue to consider whole leg edemaTrue
 
 data = pd.read_csv(filepath)
 selectedNums = [int(frac*data.shape[0]) for frac in fracs] # convert the fraction to a number of examples
@@ -32,7 +33,7 @@ def splitByID(data, testRange):
         training and testing sets dataframes
     '''
     uniqIDs = data['ID'].unique()
-    for i in range(300):
+    for i in range(1000):
         random_state = np.random.randint(0,4294967295) # generate random integer for random state
         trainIDs, testIDs = train_test_split(uniqIDs, test_size=np.random.uniform(0.1,0.9), random_state=random_state) # split IDs randomly
         trainData = data[data['ID'].isin(trainIDs)]
@@ -112,15 +113,27 @@ for selectedNum in selectedNums:
 
         # find accuracy per ID
         testUnder = testUnder.copy() # make dataframe a copy instead of a view
+
+        # add yTest and and yPred as columns of testUnder
         testUnder.loc[:,'correct'] = yTest == yPred # add a column that displays if answer is correct
+        testUnder.loc[:,'yPred'] = yPred
+        testUnder.loc[:,'yTest'] = yTest
+
+        # Create a dataframe with patch accuracy - add to IDaccs
         print(f'Patch Acc this iteration: {np.mean(testUnder["correct"])}')
         IDacc = testUnder.groupby(['ID','Foldername'])['correct'].mean() # find average accuracy per ID
         IDacc = IDacc.to_frame(name=f'Iteration {i}') # convert to DataFrame
         IDacc.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
-        # IDaccs = pd.merge(IDaccs, IDacc, left_on=["('ID','Foldername')"], right_index=True, how='left') 
+        # IDaccs = IDaccs.merge(IDacc[['ID', 'Foldername', f'Iteration {i}']],on=['ID', 'Foldername'], how='left') # comment out when doing thresholding
 
-        IDaccs = IDaccs.merge(IDacc[['ID', 'Foldername', f'Iteration {i}']],on=['ID', 'Foldername'], how='left')
-
+        # Create a dataframe with thresholding 
+        testUnder['yPred Binary'] = testUnder['yPred'].map({'EdemaTrue':True, 'EdemaFalse':False}) # map string labels to booleans
+        IDthresh = testUnder.groupby(['ID','Foldername'])['yPred Binary'].mean() # find the fraction prediction of being true
+        IDthresh = IDthresh.to_frame(name='yPred Binary') # convert to DataFrame
+        IDthresh.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
+        IDthresh[f'Iteration {i}'] = ((IDthresh['Foldername'] == 'EdemaTrue') & (IDthresh['yPred Binary'] > threshold)) | ((IDthresh['Foldername'] == 'EdemaFalse') & (IDthresh['yPred Binary'] <= threshold)) # find bollean values for correctness
+        IDthresh[f'Iteration {i}'] = IDthresh[f'Iteration {i}'].astype(int) # convert boolean to integer
+        IDaccs = IDaccs.merge(IDthresh[['ID', 'Foldername', f'Iteration {i}']],on=['ID', 'Foldername'], how='left') # merge IDthresh values with the overall IDaccs
 
         pass
 
@@ -139,10 +152,10 @@ def roundCells(cell, thresh):
 #Add averages to dataframe
 IDavg = IDaccs.drop(['ID','Foldername'], axis=1).T.mean() #Exclude the non-numerical data, and find mean across IDs using transpose
 IDaccs.insert(2,'ID Avg',IDavg) # Insert ID average
-for thresh in [0.5]: # np.arange(0.3,0.7,0.1): # iterate over possible thresholds
-    thresh = np.round(thresh, 1)
-    IDroundAvg = IDaccs.drop(['ID','Foldername'], axis=1).T.apply(lambda cell: roundCells(cell,thresh)).mean() # round cells to threshold (thresh) and then take the mean across the rows
-    IDaccs.insert(2,f'ID {thresh} Rounded Avg',IDroundAvg) # add thresholded values as a new column
+# for thresh in [0.5]: # np.arange(0.3,0.7,0.1): # iterate over possible thresholds
+#     thresh = np.round(thresh, 1)
+#     IDroundAvg = IDaccs.drop(['ID','Foldername'], axis=1).T.apply(lambda cell: roundCells(cell,thresh)).mean() # round cells to threshold (thresh) and then take the mean across the rows
+#     IDaccs.insert(2,f'ID {thresh} Rounded Avg',IDroundAvg) # add thresholded values as a new column
 
 
 def bootstrapRow(row, round=False):
@@ -159,7 +172,7 @@ def bootstrapRow(row, round=False):
     row = row[row.notna()].values # remove nan values
     if round:
         row = np.round(row)
-    for _ in range(10): #___ set to 1000 for deployment
+    for _ in range(100): #___ set to 1000 for deployment
         sample = np.random.choice(row, size=len(row), replace=True)
         bootstrapped_means.append(np.mean(sample))
     lower = np.percentile(bootstrapped_means, (1-confidence)*100/2)
@@ -172,11 +185,11 @@ IDaccs.loc['Column Average'] = IDaccs.drop(['ID','Foldername'], axis=1).mean(axi
 
 # apply 95% CI to iterations data
 hasFolderHasAvg = (IDaccs.loc[:,'Foldername'].notna()) | (IDaccs.index == 'Column Average') # select rows with folder names and the column average
-iterations = IDaccs.loc[hasFolderHasAvg, 'Iteration 0':f'Iteration {i}'] # select all of iteration data
-CI95 = iterations.apply(lambda row: bootstrapRow(row), axis=1)
+iteration = IDaccs.loc[hasFolderHasAvg, 'Iteration 0':f'Iteration {i}'] # select all of iteration data
+CI95 = iteration.apply(lambda row: bootstrapRow(row), axis=1)
 IDaccs.insert(3, '95%CI', CI95)
-CI95round = iterations.apply(lambda row: bootstrapRow(row, round=True), axis=1)
-IDaccs.insert(3, '95%CIround', CI95round)
+# CI95round = iteration.apply(lambda row: bootstrapRow(row, round=True), axis=1)
+# IDaccs.insert(3, '95%CIround', CI95round)
 
 def halfDifference(input):
     '''
@@ -188,12 +201,18 @@ def halfDifference(input):
 # notColAvg = IDaccs.index != 'Column Average'
 yerr = IDaccs.loc[:,'95%CI'].apply(halfDifference) # apply the halfDifference equation to get the error needed for bar chart
 IDaccs.insert(2, 'Yerr', yerr)
-yerrRounded = IDaccs.loc[:,'95%CIround'].apply(halfDifference)
-IDaccs.insert(2, 'YerrRounded', yerrRounded)
+# yerrRounded = IDaccs.loc[:,'95%CIround'].apply(halfDifference)
+# IDaccs.insert(2, 'YerrRounded', yerrRounded)
 
 # find values to plot in bar chart
 IDaccs.insert(2,'Labels',IDaccs['ID'].astype(str) + '\n' + IDaccs['Foldername']) # combine columns for figure labels
 IDaccs.loc['Column Average','Labels'] = 'Column Average'
+
+# Find accuracy by Foldername
+FolderAcc = IDaccs.groupby('Foldername')['ID Avg'].mean() # find accuracy by foldername
+FolderAcc = FolderAcc.reset_index(inplace=False)
+FolderAcc['Labels'] = FolderAcc['Foldername']
+IDaccs = pd.concat([IDaccs, FolderAcc], axis=0)
 
 def columnBarPlot(df, hasValues, labelsKey, valuesKey, errorKey, xlabel, ylabel, title):
     '''
@@ -204,26 +223,26 @@ def columnBarPlot(df, hasValues, labelsKey, valuesKey, errorKey, xlabel, ylabel,
         hasValues: Key for Dataframe column. The column's rows with values will be used in this analysis
         labelsKey: Key for labels column in Dataframe
         valuesKey: Key for values column in Dataframe
+        xlabel, ylabel, title: for plot
     '''
     labels = df[hasValues][labelsKey] # labels for bar chart
-    labels.iloc[-1] = 'Column Average' # add label for column average
+    labels.loc['Column Average'] = 'Column Average' # add label for column average
     values = df[hasValues][valuesKey] # y values for bar chart
     yerrPlot = df[hasValues][errorKey]
     yerrPlot = np.vstack(yerrPlot).T # errors for bar chart
     # plot bar chart
     fig, ax = plt.subplots()
     bars = ax.bar(labels, values, yerr=yerrPlot)
-    ax.tick_params(axis='x', labelsize=8)
+    ax.tick_params(axis='x', labelsize=3)
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
-    plt.title(title)
+    plt.title(title + ' overall average=' + str(round(values['Column Average']*100,1))) 
 
-columnBarPlot(IDaccs, IDaccs['ID 0.5 Rounded Avg'].notna(),'Labels','ID 0.5 Rounded Avg','YerrRounded','ID \n Foldername','Accuracy','0.5 Rounded Accuracy by ID Foldername')
-columnBarPlot(IDaccs, IDaccs['ID Avg'].notna(),'Labels','ID Avg','Yerr','ID \n Foldername','Accuracy','Accuracy by ID Foldername')
-# plt.show()
-
+# columnBarPlot(IDaccs, IDaccs['ID 0.5 Rounded Avg'].notna(),'Labels','ID 0.5 Rounded Avg','YerrRounded','ID \n Foldername','Accuracy',f'0.5 Rounded Accuracy by ID Foldername n={selectedNum} iterations={iterations}')
+columnBarPlot(IDaccs, IDaccs['ID Avg'].notna(),'Labels','ID Avg','Yerr','ID \n Foldername','Accuracy',f'Accuracy by ID Foldername n={selectedNum} iterations={iterations}')
+plt.show()
 
 # add metadata and save 
 IDaccs.loc['Info','Labels'] = f'input filename: {filepath.split("/")[-1]}' # add input filename
-IDaccs.to_csv(f'/Users/maycaj/Downloads/IDaccs_n={selectedNum}.csv') # Save the accuracy as csv
+IDaccs.to_csv(f'/Users/maycaj/Downloads/IDaccs_n={selectedNum}i={iterations}.csv') # Save the accuracy as csv
 print('All done ;)')
