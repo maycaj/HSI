@@ -16,8 +16,8 @@ import re
 # initialize filepath & number of samples
 filepath = '/Users/maycaj/Documents/HSI_III/1-7-25_5x5.csv'
 fracs = [0.01] # fraction of patches to include
-iterations = 15 # how many times to repeat the analysis
-threshold = 0.7 # what fraction of patches of edemaTrue to consider whole leg edemaTrue
+iterations = 300 # how many times to repeat the analysis
+threshold = 0.5 # what fraction of patches of edemaTrue to consider whole leg edemaTrue
 
 data = pd.read_csv(filepath)
 selectedNums = [int(frac*data.shape[0]) for frac in fracs] # convert the fraction to a number of examples
@@ -93,8 +93,31 @@ for selectedNum in selectedNums:
         
 
         # do PCA dimensionality reduction
-        pca = make_pipeline(StandardScaler(), PCA(n_components=3, random_state=random_state))
+        pca = make_pipeline(StandardScaler(), PCA(n_components=10, random_state=random_state))
         pca.fit(Xtrain, yTrain) # fit method's model
+
+        # # Plot how much variance is explained by PCA
+        # print(pca.named_steps['pca'].explained_variance_ratio_)
+        # plt.figure(figsize=(8, 6))
+        # plt.plot(range(1, len(pca.named_steps['pca'].explained_variance_ratio_) + 1), pca.named_steps['pca'].explained_variance_ratio_)
+        # plt.xlabel('Number of Components')
+        # plt.ylabel('Explained Variance Ratio')
+        # plt.title(f'Scree Plot - Examples per iteration: {selectedNum}')
+        # plt.show()
+
+        # # plot the PCA weights
+        # components = pca.named_steps['pca'].components_
+        # components = np.abs(components)
+        # wavelengths = [451.18,456.19,461.21,466.23,471.25,476.28,481.32,486.36,491.41,496.46,501.51,506.57,511.64,516.71,521.78,526.86,531.95,537.04,542.13,547.23,552.34,557.45,562.57,567.69,572.81,577.94,583.07,588.21,593.36,598.51,603.66,608.82,613.99,619.16,624.33,629.51,634.7,639.88,645.08,650.28,655.48,660.69,665.91,671.12,676.35,681.58,686.81,692.05,697.29,702.54,707.8,713.06,718.32,723.59,728.86,734.14,739.42,744.71,750.01,755.3,760.61,765.92,771.23,776.55,781.87,787.2,792.53,797.87,803.21,808.56,813.91,819.27,824.63,830,835.37,840.75,846.13,851.52,856.91,862.31,867.71,873.12,878.53,883.95,889.37,894.8,900.23,905.67,911.11,916.56,922.01,927.47,932.93,938.4,943.87,949.35,954.83]
+        # for j in range(components.shape[0]):
+        #     plt.scatter(wavelengths,components[j], label=f'Component: {j}')
+        #     if j > 2: # don't plot more than 3 dimensions
+        #       break   
+        # plt.legend()
+        # plt.title('PCA weights')
+        # plt.xlabel('Band (nm)')
+        # plt.ylabel('Absolute value of Weight')
+        # plt.show()
 
         # fit SVM on data
         svc = SVC(kernel='linear')
@@ -124,16 +147,16 @@ for selectedNum in selectedNums:
         IDacc = testUnder.groupby(['ID','Foldername'])['correct'].mean() # find average accuracy per ID
         IDacc = IDacc.to_frame(name=f'Iteration {i}') # convert to DataFrame
         IDacc.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
-        # IDaccs = IDaccs.merge(IDacc[['ID', 'Foldername', f'Iteration {i}']],on=['ID', 'Foldername'], how='left') # comment out when doing thresholding
+        IDaccs = IDaccs.merge(IDacc[['ID', 'Foldername', f'Iteration {i}']],on=['ID', 'Foldername'], how='left') # comment out when doing thresholding
 
-        # Create a dataframe with thresholding 
-        testUnder['yPred Binary'] = testUnder['yPred'].map({'EdemaTrue':True, 'EdemaFalse':False}) # map string labels to booleans
-        IDthresh = testUnder.groupby(['ID','Foldername'])['yPred Binary'].mean() # find the fraction prediction of being true
-        IDthresh = IDthresh.to_frame(name='yPred Binary') # convert to DataFrame
-        IDthresh.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
-        IDthresh[f'Iteration {i}'] = ((IDthresh['Foldername'] == 'EdemaTrue') & (IDthresh['yPred Binary'] > threshold)) | ((IDthresh['Foldername'] == 'EdemaFalse') & (IDthresh['yPred Binary'] <= threshold)) # find bollean values for correctness
-        IDthresh[f'Iteration {i}'] = IDthresh[f'Iteration {i}'].astype(int) # convert boolean to integer
-        IDaccs = IDaccs.merge(IDthresh[['ID', 'Foldername', f'Iteration {i}']],on=['ID', 'Foldername'], how='left') # merge IDthresh values with the overall IDaccs
+        # # Create a dataframe with thresholding 
+        # testUnder['yPred Binary'] = testUnder['yPred'].map({'EdemaTrue':True, 'EdemaFalse':False}) # map string labels to booleans
+        # IDthresh = testUnder.groupby(['ID','Foldername'])['yPred Binary'].mean() # find the fraction prediction of being true
+        # IDthresh = IDthresh.to_frame(name='yPred Binary') # convert to DataFrame
+        # IDthresh.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
+        # IDthresh[f'Iteration {i}'] = ((IDthresh['Foldername'] == 'EdemaTrue') & (IDthresh['yPred Binary'] > threshold)) | ((IDthresh['Foldername'] == 'EdemaFalse') & (IDthresh['yPred Binary'] <= threshold)) # find bollean values for correctness
+        # IDthresh[f'Iteration {i}'] = IDthresh[f'Iteration {i}'].astype(int) # convert boolean to integer
+        # IDaccs = IDaccs.merge(IDthresh[['ID', 'Foldername', f'Iteration {i}']],on=['ID', 'Foldername'], how='left') # merge IDthresh values with the overall IDaccs
 
         pass
 
