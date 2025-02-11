@@ -12,13 +12,17 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.animation import FuncAnimation
 import re
+from sklearn.model_selection import KFold
+from sklearn.svm import LinearSVC
+from sklearn.linear_model import SGDClassifier
 
 # initialize filepath & number of samples
-filepath = '/Users/maycaj/Documents/HSI_III/Feb4_1x1_ContinuumRemoved_WLFiltered.csv' # '/Users/maycaj/Documents/HSI_III/1-22-25_5x5.csv' #'/Users/maycaj/Documents/HSI_III/Jan16_1x1_ContinuumRemoved.csv'
-fracs = [0.045] # fraction of patches to include
-iterations = 200 # how many times to repeat the analysis
+filepath = '/Users/maycaj/Documents/HSI_III/Feb4_1x1_ContinuumRemoved_WLFiltered.csv' #'/Users/maycaj/Documents/HSI_III/1-22-25_5x5.csv'
+fracs = [1] # fraction of patches to include
+iterations = 2 # how many times to repeat the analysis
 threshold = 0.5 # what fraction of patches of edemaTrue to consider whole leg edemaTrue
-nmStartEnd = ['Wavelength_451.18','Wavelength_954.83'] # 5x5: ['451.18','954.83'] # specify the wavelengths to include in analysis
+nmStartEnd = ['Wavelength_451.18','Wavelength_954.83'] # specify the wavelengths to include in analysis (1x1 continuum)
+# nmStartEnd = ['451.18','954.83'] # (5x5)
 
 data = pd.read_csv(filepath)
 # data = data[data['final_diagnosis_other'] == 'Cellulitis'] # select the cellulitis condition only
@@ -151,6 +155,36 @@ def printWeights(data):
     print(f'True total: {trueSum}')
     print(f'False total: {falseSum}')
 
+def plotScree(pca, title):
+    '''
+    Plot how much variance is explained by PCA
+    args: 
+        pca: PCA pipeline object from sklearn
+    '''
+    print(pca.named_steps['pca'].explained_variance_ratio_)
+    plt.figure(figsize=(8, 6))
+    plt.plot(range(1, len(pca.named_steps['pca'].explained_variance_ratio_) + 1), pca.named_steps['pca'].explained_variance_ratio_)
+    plt.xlabel('Number of Components')
+    plt.ylabel('Explained Variance Ratio')
+    plt.title(title)
+
+def plotPCAcomponents(pca):
+    '''    
+    plot the PCA weights
+    args: 
+        pca: PCA pipeline object from sklearn
+    '''
+    components = pca.named_steps['pca'].components_
+    components = np.abs(components)
+    wavelengths = [451.18,456.19,461.21,466.23,471.25,476.28,481.32,486.36,491.41,496.46,501.51,506.57,511.64,516.71,521.78,526.86,531.95,537.04,542.13,547.23,552.34,557.45,562.57,567.69,572.81,577.94,583.07,588.21,593.36,598.51,603.66,608.82,613.99,619.16,624.33,629.51,634.7,639.88,645.08,650.28,655.48,660.69,665.91,671.12,676.35,681.58,686.81,692.05,697.29,702.54,707.8,713.06,718.32,723.59,728.86,734.14,739.42,744.71,750.01,755.3,760.61,765.92,771.23,776.55,781.87,787.2,792.53,797.87,803.21,808.56,813.91,819.27,824.63,830,835.37,840.75,846.13,851.52,856.91,862.31,867.71,873.12,878.53,883.95,889.37,894.8,900.23,905.67,911.11,916.56,922.01,927.47,932.93,938.4,943.87,949.35,954.83]
+    for j in range(components.shape[0]):
+        plt.scatter(wavelengths,components[j], label=f'Component: {j}')
+        if j > 2: # don't plot more than 3 dimensions
+          break   
+    plt.legend()
+    plt.title('PCA weights')
+    plt.xlabel('Band (nm)')
+    plt.ylabel('Absolute value of Weight')
 
 TN, FP, FN, TP = 0, 0, 0, 0 # initialize confusion matrix tally
 uniqIDs = data['ID'].unique() # find unique IDs
@@ -159,6 +193,11 @@ IDaccs = pd.DataFrame(uniqIDs, columns=['ID']) # make a dataframe with accuracie
 IDaccs = IDaccs.loc[IDaccs.index.repeat(2)]  # Repeat each row twice
 IDaccs['Foldername'] = ['EdemaTrue', 'EdemaFalse'] * (len(IDaccs) // 2) # Add EdemaTrue and EdemaFalse to each row
 
+# Initialize a dataframe for Location of each classification
+PredLocs = pd.DataFrame([])
+
+# Initialize a dataframe for confusion matricies
+confusions = pd.DataFrame(columns=['ID','TN','FP','FN','TP'])
 
 # Loop over the selected number of data and each iteration
 for selectedNum in selectedNums:
@@ -168,105 +207,120 @@ for selectedNum in selectedNums:
 
         dataFrac = data.sample(n=selectedNum,random_state=random_state) # include a fraction of the data so debugging is fast
 
-        # find a set of patient IDs that will go ONLY in testing or ONLY in training - a larger range makes it so that a wider range of ID+conditions are tested in less iterations
-        train, test = splitByID(dataFrac, [0.08,0.4]) 
+        kf = KFold(n_splits=5, shuffle=True, random_state=42) #shuffle is important to avoid bias
 
-        # Undersample the majority class so there are equal numbers of each class
-        train = undersampleClass(train, ['EdemaTrue','EdemaFalse'])
+        # # # find a set of patient IDs that will go ONLY in testing or ONLY in training - a larger range makes it so that a wider range of ID+conditions are tested in less iterations
+        # train, test = splitByID(dataFrac, [0.08,0.4]) 
 
-        # # Undersample by ID
-        # train = undersampleID(train)
+        for foldNum, index in enumerate(kf.split(uniqIDs)):
+            # select training and testing data from k-fold
+            train_index, val_index = index
+            trainIDs = uniqIDs[train_index]
+            testIDs = uniqIDs[val_index]
+            print(f'Train IDs: {trainIDs}')
+            print(f'Test IDs: {testIDs}')
+            train = dataFrac[dataFrac['ID'].isin(trainIDs)]
+            test = dataFrac[dataFrac['ID'].isin(testIDs)].copy()
 
-        # Add weights such that each patient and each category is equally weighted
-        train['Weights'] = float(1)
-        # # Weight classes by True / False
-        # weightClass(train)
-        # Xweights = train['Weights']
+            # Undersample the majority class so there are equal numbers of each class
+            train = undersampleClass(train, ['EdemaTrue','EdemaFalse'])
 
-        # print sum of weights and sum of examples
-        printWeights(train)
+            # # Undersample by ID
+            # train = undersampleID(train)
 
-        # select the X and the y from the data
-        Xtrain = train.loc[:,nmStartEnd[0]:nmStartEnd[1]] # leave out noisy wavelengths
-        yTrain = train['Foldername']
-        Xtest = test.loc[:,nmStartEnd[0]:nmStartEnd[1]]
-        yTest = test['Foldername']
-        
-        # # Subtract each sample's mean from itself to get rid of flat PCA in first dimension (Subtracting mean worsens accuracy)
-        # Xtrain = Xtrain.apply(lambda row: row-np.mean(row), axis=1)
-        # Xtest = Xtest.apply(lambda row: row-np.mean(row), axis=1)
+            # Add weights such that each patient and each category is equally weighted
+            train['Weights'] = float(1)
+            # # Weight classes by True / False
+            # weightClass(train)
+            # Xweights = train['Weights']
 
-        # do PCA dimensionality reduction
-        pca = make_pipeline(StandardScaler(), PCA(n_components=30, random_state=random_state))
-        pca.fit(Xtrain, yTrain) # fit method's model
+            # print sum of weights and sum of examples
+            # printWeights(train)
 
-        # # Plot how much variance is explained by PCA
-        # print(pca.named_steps['pca'].explained_variance_ratio_)
-        # plt.figure(figsize=(8, 6))
-        # plt.plot(range(1, len(pca.named_steps['pca'].explained_variance_ratio_) + 1), pca.named_steps['pca'].explained_variance_ratio_)
-        # plt.xlabel('Number of Components')
-        # plt.ylabel('Explained Variance Ratio')
-        # plt.title(f'Scree Plot - Examples per iteration: {selectedNum}')
-        # plt.show()
+            # select the X and the y from the data
+            Xtrain = train.loc[:,nmStartEnd[0]:nmStartEnd[1]] # leave out noisy wavelengths
+            yTrain = train['Foldername']
+            Xtest = test.loc[:,nmStartEnd[0]:nmStartEnd[1]]
+            yTest = test['Foldername']
+            
+            # # Subtract each sample's mean from itself to get rid of flat PCA in first dimension (Subtracting mean worsens accuracy)
+            # Xtrain = Xtrain.apply(lambda row: row-np.mean(row), axis=1)
+            # Xtest = Xtest.apply(lambda row: row-np.mean(row), axis=1)
 
-        # # plot the PCA weights
-        # components = pca.named_steps['pca'].components_
-        # components = np.abs(components)
-        # wavelengths = [451.18,456.19,461.21,466.23,471.25,476.28,481.32,486.36,491.41,496.46,501.51,506.57,511.64,516.71,521.78,526.86,531.95,537.04,542.13,547.23,552.34,557.45,562.57,567.69,572.81,577.94,583.07,588.21,593.36,598.51,603.66,608.82,613.99,619.16,624.33,629.51,634.7,639.88,645.08,650.28,655.48,660.69,665.91,671.12,676.35,681.58,686.81,692.05,697.29,702.54,707.8,713.06,718.32,723.59,728.86,734.14,739.42,744.71,750.01,755.3,760.61,765.92,771.23,776.55,781.87,787.2,792.53,797.87,803.21,808.56,813.91,819.27,824.63,830,835.37,840.75,846.13,851.52,856.91,862.31,867.71,873.12,878.53,883.95,889.37,894.8,900.23,905.67,911.11,916.56,922.01,927.47,932.93,938.4,943.87,949.35,954.83]
-        # for j in range(components.shape[0]):
-        #     plt.scatter(wavelengths,components[j], label=f'Component: {j}')
-        #     if j > 2: # don't plot more than 3 dimensions
-        #       break   
-        # plt.legend()
-        # plt.title('PCA weights')
-        # plt.xlabel('Band (nm)')
-        # plt.ylabel('Absolute value of Weight')
-        # plt.show()
+            # do PCA dimensionality reduction
+            pca = make_pipeline(StandardScaler(), PCA(n_components=30, random_state=random_state))
+            pca.fit(Xtrain, yTrain) # fit method's model
 
-        # fit SVM on data
-        svc = SVC(kernel='linear')
-        svc.fit(pca.transform(Xtrain),yTrain)
-        # svc.fit(pca.transform(Xtrain),yTrain,sample_weight=Xweights) # for weights
-        # svc.fit(Xtrain, yTrain) # for no dim reduction
-        XtestTransformed = pca.transform(Xtest)
-        # XtestTransformed = Xtest # for no dim reduction
-        yPred = svc.predict(XtestTransformed)
+            # # inspect PCA
+            # plotScree(pca, f'Scree Plot - Examples per iteration: {selectedNum}')
+            # plotPCAcomponents(pca)
+            # plt.show()
 
-        cm = confusion_matrix(yTest, yPred)
-        print(cm)  # Output: [[1 1], [1 2]]
-        TN = TN + cm[0, 0]  
-        FP = FP + cm[0, 1] 
-        FN = FN + cm[1, 0] 
-        TP = TP + cm[1, 1] 
-        patchAcc = (TN+TP)/(TN+TP+FN+FP)
-        print(f'Confusion matrix for all iterations: \n [[{TP}, {FP}],\n [{FN}, {TN}]]')
-        print(f'Patch Acc for all iterations: {patchAcc}')
+            # create SVM
+            svc = SVC(kernel='linear') 
+            # svc = SGDClassifier(loss='hinge', random_state=random_state) # stocastic
 
-        # find accuracy per ID
-        test = test.copy() # make dataframe a copy instead of a view
+            # fit SVM on data
+            # svc.fit(pca.transform(Xtrain),yTrain)
+            # scaler = StandardScaler()
+            # svc.fit(scaler.fit_transform(pca.transform(Xtrain)),yTrain) # include standard scaler
+            svc.fit(pca.transform(Xtrain),yTrain)
+            # svc.fit(pca.transform(Xtrain),yTrain,sample_weight=Xweights) # for weights
+            # svc.fit(Xtrain, yTrain) # for no dim reduction
 
-        # add yTest and and yPred as columns of test
-        test.loc[:,'correct'] = yTest == yPred # add a column that displays if answer is correct
-        test.loc[:,'yPred'] = yPred
-        test.loc[:,'yTest'] = yTest
+            XtestTransformed = pca.transform(Xtest)
+            # XtestTransformed = scaler.transform(pca.transform(Xtest)) # for standard scaling
+            # XtestTransformed = Xtest # for no dim reduction
 
-        # Create a dataframe with patch accuracy - add to IDaccs
-        print(f'Patch Acc this iteration: {np.mean(test["correct"])}')
-        IDacc = test.groupby(['ID','Foldername'])['correct'].mean() # find average accuracy per ID
-        IDacc = IDacc.to_frame(name=f'Iteration {i}') # convert to DataFrame
-        IDacc.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
-        IDaccs = IDaccs.merge(IDacc[['ID', 'Foldername', f'Iteration {i}']],on=['ID', 'Foldername'], how='left') # comment out when doing thresholding
+            yPred = svc.predict(XtestTransformed)
 
-        # # Create a dataframe with thresholding 
-        # test['yPred Binary'] = test['yPred'].map({'EdemaTrue':True, 'EdemaFalse':False}) # map string labels to booleans
-        # IDthresh = test.groupby(['ID','Foldername'])['yPred Binary'].mean() # find the fraction prediction of being true
-        # IDthresh = IDthresh.to_frame(name='yPred Binary') # convert to DataFrame
-        # IDthresh.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
-        # IDthresh[f'Iteration {i}'] = ((IDthresh['Foldername'] == 'EdemaTrue') & (IDthresh['yPred Binary'] > threshold)) | ((IDthresh['Foldername'] == 'EdemaFalse') & (IDthresh['yPred Binary'] <= threshold)) # find bollean values for correctness
-        # IDthresh[f'Iteration {i}'] = IDthresh[f'Iteration {i}'].astype(int) # convert boolean to integer
-        # IDaccs = IDaccs.merge(IDthresh[['ID', 'Foldername', f'Iteration {i}']],on=['ID', 'Foldername'], how='left') # merge IDthresh values with the overall IDaccs
+            cm = confusion_matrix(yTest, yPred)
+            print(cm)  # Output: [[1 1], [1 2]]
+            TN = TN + cm[0, 0]  
+            FP = FP + cm[0, 1] 
+            FN = FN + cm[1, 0] 
+            TP = TP + cm[1, 1] 
+            patchAcc = (TN+TP)/(TN+TP+FN+FP)
+            print(f'Confusion matrix for all iterations: \n [[{TP}, {FP}],\n [{FN}, {TN}]]')
+            print(f'Patch Acc for all iterations: {patchAcc}')
 
-        pass
+
+            # add yTest and and yPred as columns of test
+            test.loc[:,'correct'] = yTest == yPred # add a column that displays if answer is correct
+            test.loc[:,'yPred'] = yPred
+            test.loc[:,'yTest'] = yTest
+
+            # Place confusion matrix info for this iteration into confusion - place all iterations in confusions
+            for ID in uniqIDs:
+                IDtest = test[test['ID']==ID]
+                if not IDtest.empty: # double check if this ID is in testing set
+                    cm = confusion_matrix(IDtest['yTest'],IDtest['yPred'])
+                    TN, FP, FN, TP = cm.ravel()
+                    confusions = pd.concat([confusions, pd.DataFrame([[ID, TN, FP, FN, TP]], columns=['ID','TN','FP','FN','TP'])])
+                    pass
+
+            # Create dataframe with ID, foldername, prediction, and coordinates
+            # PredLoc = test[['xLocation,yLocation,size','Foldername','ID','yPred']] # for 5x5
+            PredLoc = test[['X','Y','Foldername','ID','yPred']]
+            PredLocs = pd.concat([PredLocs, PredLoc])
+
+            # Create a dataframe with patch accuracy - add to IDaccs
+            print(f'Patch Acc this iteration: {np.mean(test["correct"])}')
+            IDacc = test.groupby(['ID','Foldername'])['correct'].mean() # find average accuracy per ID
+            IDacc = IDacc.to_frame(name=f'Iter {i} Fold {foldNum}') # convert to DataFrame
+            IDacc.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
+            IDaccs = IDaccs.merge(IDacc[['ID', 'Foldername', f'Iter {i} Fold {foldNum}']],on=['ID', 'Foldername'], how='left') # comment out when doing thresholding
+
+            # # Create a dataframe with thresholding 
+            # test['yPred Binary'] = test['yPred'].map({'EdemaTrue':True, 'EdemaFalse':False}) # map string labels to booleans
+            # IDthresh = test.groupby(['ID','Foldername'])['yPred Binary'].mean() # find the fraction prediction of being true
+            # IDthresh = IDthresh.to_frame(name='yPred Binary') # convert to DataFrame
+            # IDthresh.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
+            # IDthresh[f'Iter {i} Fold {foldNum}'] = ((IDthresh['Foldername'] == 'EdemaTrue') & (IDthresh['yPred Binary'] > threshold)) | ((IDthresh['Foldername'] == 'EdemaFalse') & (IDthresh['yPred Binary'] <= threshold)) # find bollean values for correctness
+            # IDthresh[f'Iter {i} Fold {foldNum}'] = IDthresh[f'Iter {i} Fold {foldNum}'].astype(int) # convert boolean to integer
+            # IDaccs = IDaccs.merge(IDthresh[['ID', 'Foldername', f'Iter {i} Fold {foldNum}']],on=['ID', 'Foldername'], how='left') # merge IDthresh values with the overall IDaccs
+            
+            pass
 
 def roundCells(cell, thresh):
     '''
@@ -283,7 +337,7 @@ def roundCells(cell, thresh):
 #Add averages to dataframe
 IDavg = IDaccs.drop(['ID','Foldername'], axis=1).T.mean() #Exclude the non-numerical data, and find mean across IDs using transpose
 IDaccs.insert(2,'ID Avg',IDavg) # Insert ID average
-for thresh in [0.5]: # np.arange(0.3,0.7,0.1): # iterate over possible thresholds
+for thresh in [threshold]: # np.arange(0.3,0.7,0.1): # iterate over possible thresholds
     thresh = np.round(thresh, 1)
     IDroundAvg = IDaccs.drop(['ID','Foldername'], axis=1).T.apply(lambda cell: roundCells(cell,thresh)).mean() # round cells to threshold (thresh) and then take the mean across the rows
     IDaccs.insert(2,f'ID {thresh} Rounded Avg',IDroundAvg) # add thresholded values as a new column
@@ -316,7 +370,7 @@ IDaccs.loc['Column Average'] = IDaccs.drop(['ID','Foldername'], axis=1).mean(axi
 
 # apply 95% CI to iterations data
 hasFolderHasAvg = (IDaccs.loc[:,'Foldername'].notna()) | (IDaccs.index == 'Column Average') # select rows with folder names and the column average
-iteration = IDaccs.loc[hasFolderHasAvg, 'Iteration 0':f'Iteration {i}'] # select all of iteration data
+iteration = IDaccs.loc[hasFolderHasAvg, 'Iter 0 Fold 0':f'Iter {i} Fold {foldNum}'] # select all of iteration data
 CI95 = iteration.apply(lambda row: bootstrapRow(row), axis=1)
 IDaccs.insert(3, '95%CI', CI95)
 CI95round = iteration.apply(lambda row: bootstrapRow(row, round=True), axis=1)
@@ -380,7 +434,13 @@ columnBarPlot(IDaccs, IDaccs['ID 0.5 Rounded Avg'].notna(),'Labels','ID 0.5 Roun
 columnBarPlot(IDaccs, IDaccs['ID Avg'].notna(),'Labels','ID Avg','Yerr','ID \n Foldername','Accuracy',f'Accuracy by ID Foldername n={selectedNum} iterations={iterations}')
 plt.show()
 
+# Find the confusion matricies for each ID
+confusion = confusions.groupby('ID').sum()
+
 # add metadata and save 
 IDaccs.loc['Info','Labels'] = f'input filename: {filepath.split("/")[-1]}' # add input filename
 IDaccs.to_csv(f'/Users/maycaj/Downloads/IDaccs_n={selectedNum}i={iterations}.csv') # Save the accuracy as csv
+PredLocs.to_csv(f'/Users/maycaj/Downloads/PredLocs_n={selectedNum}i={iterations}.csv') # Save predictions with locations as csv
+confusion.to_csv(f'/Users/maycaj/Downloads/confusion_n={selectedNum}i={iterations}.csv')
+confusions.to_csv(f'/Users/maycaj/Downloads/confusions_n={selectedNum}i={iterations}.csv')
 print('All done ;)')
