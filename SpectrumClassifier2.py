@@ -18,7 +18,7 @@ from sklearn.linear_model import SGDClassifier
 
 # initialize filepath & number of samples
 filepath = '/Users/maycaj/Documents/HSI_III/Feb4_1x1_ContinuumRemoved_WLFiltered.csv' #'/Users/maycaj/Documents/HSI_III/1-22-25_5x5.csv'
-fracs = [1] # fraction of patches to include
+fracs = [0.01] # fraction of patches to include
 iterations = 2 # how many times to repeat the analysis
 threshold = 0.5 # what fraction of patches of edemaTrue to consider whole leg edemaTrue
 nmStartEnd = ['Wavelength_451.18','Wavelength_954.83'] # specify the wavelengths to include in analysis (1x1 continuum)
@@ -207,7 +207,7 @@ for selectedNum in selectedNums:
 
         dataFrac = data.sample(n=selectedNum,random_state=random_state) # include a fraction of the data so debugging is fast
 
-        kf = KFold(n_splits=5, shuffle=True, random_state=42) #shuffle is important to avoid bias
+        kf = KFold(n_splits=5, shuffle=True, random_state=random_state) #shuffle is important to avoid bias
 
         # # # find a set of patient IDs that will go ONLY in testing or ONLY in training - a larger range makes it so that a wider range of ID+conditions are tested in less iterations
         # train, test = splitByID(dataFrac, [0.08,0.4]) 
@@ -230,12 +230,12 @@ for selectedNum in selectedNums:
 
             # Add weights such that each patient and each category is equally weighted
             train['Weights'] = float(1)
-            # # Weight classes by True / False
+            # Weight classes by True / False
             # weightClass(train)
             # Xweights = train['Weights']
 
             # print sum of weights and sum of examples
-            # printWeights(train)
+            printWeights(train)
 
             # select the X and the y from the data
             Xtrain = train.loc[:,nmStartEnd[0]:nmStartEnd[1]] # leave out noisy wavelengths
@@ -257,8 +257,8 @@ for selectedNum in selectedNums:
             # plt.show()
 
             # create SVM
-            svc = SVC(kernel='linear') 
-            # svc = SGDClassifier(loss='hinge', random_state=random_state) # stocastic
+            # svc = SVC(kernel='linear') 
+            svc = SGDClassifier(loss='hinge', random_state=random_state) # stocastic
 
             # fit SVM on data
             # svc.fit(pca.transform(Xtrain),yTrain)
@@ -291,17 +291,19 @@ for selectedNum in selectedNums:
             test.loc[:,'yTest'] = yTest
 
             # Place confusion matrix info for this iteration into confusion - place all iterations in confusions
+            uniqFoldernames = test['Foldername'].unique()
             for ID in uniqIDs:
-                IDtest = test[test['ID']==ID]
-                if not IDtest.empty: # double check if this ID is in testing set
-                    cm = confusion_matrix(IDtest['yTest'],IDtest['yPred'])
-                    TN, FP, FN, TP = cm.ravel()
-                    confusions = pd.concat([confusions, pd.DataFrame([[ID, TN, FP, FN, TP]], columns=['ID','TN','FP','FN','TP'])])
-                    pass
+                for foldername in uniqFoldernames:
+                    IDtestFolder = test[(test['ID']==ID) | (test['yTest']==foldername)]
+                    if not IDtestFolder.empty: # double check if this ID is in testing set
+                        cm = confusion_matrix(IDtestFolder['yTest'],IDtestFolder['yPred'])
+                        TN, FP, FN, TP = cm.ravel()
+                        confusions = pd.concat([confusions, pd.DataFrame([[ID, foldername, TN, FP, FN, TP]], columns=['ID','Foldername','TN','FP','FN','TP'])])
+                        pass
 
             # Create dataframe with ID, foldername, prediction, and coordinates
             # PredLoc = test[['xLocation,yLocation,size','Foldername','ID','yPred']] # for 5x5
-            PredLoc = test[['X','Y','Foldername','ID','yPred']]
+            PredLoc = test[['X','Y','ID','yPred','FloatName','correct','Foldername']]
             PredLocs = pd.concat([PredLocs, PredLoc])
 
             # Create a dataframe with patch accuracy - add to IDaccs
@@ -331,7 +333,7 @@ def roundCells(cell, thresh):
     returns:
         output: rounded cells
     '''
-    output =  np.where(np.isnan(cell), np.nan, np.where(cell >= thresh, 1, 0))
+    output =  np.where(np.isnan(cell), np.nan, np.where(cell > thresh, 1, 0)) # np.round() is used later on so it must be < not <=
     return output
 
 #Add averages to dataframe
@@ -435,12 +437,13 @@ columnBarPlot(IDaccs, IDaccs['ID Avg'].notna(),'Labels','ID Avg','Yerr','ID \n F
 plt.show()
 
 # Find the confusion matricies for each ID
-confusion = confusions.groupby('ID').sum()
+confusion = confusions.groupby(['ID','Foldername']).sum()
+confusion = confusion.reset_index()
 
 # add metadata and save 
 IDaccs.loc['Info','Labels'] = f'input filename: {filepath.split("/")[-1]}' # add input filename
 IDaccs.to_csv(f'/Users/maycaj/Downloads/IDaccs_n={selectedNum}i={iterations}.csv') # Save the accuracy as csv
-PredLocs.to_csv(f'/Users/maycaj/Downloads/PredLocs_n={selectedNum}i={iterations}.csv') # Save predictions with locations as csv
+PredLocs.to_csv(f'/Users/maycaj/Downloads/PredLocs_n={selectedNum}i={iterations}.csv.gz', compression='gzip', index=False) # Save predictions with locations as csv
 confusion.to_csv(f'/Users/maycaj/Downloads/confusion_n={selectedNum}i={iterations}.csv')
 confusions.to_csv(f'/Users/maycaj/Downloads/confusions_n={selectedNum}i={iterations}.csv')
 print('All done ;)')
