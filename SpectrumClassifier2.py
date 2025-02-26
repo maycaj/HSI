@@ -15,20 +15,31 @@ import re
 from sklearn.model_selection import KFold
 from sklearn.svm import LinearSVC
 from sklearn.linear_model import SGDClassifier
+import time
+
 
 # initialize filepath & number of samples
-filepath = '/Users/maycaj/Documents/HSI_III/Feb4_1x1_ContinuumRemoved_WLFiltered.csv' #'/Users/maycaj/Documents/HSI_III/1-22-25_5x5.csv'
-fracs = [0.01] # fraction of patches to include
-iterations = 2 # how many times to repeat the analysis
+bioWulf = False # If we are running on bioWulf supercomputer
+if bioWulf:
+    filepath = '/data/maycaj/PatchCSVs/Feb21_1x1_ContinuumRemoved_WLFiltered_Recrop_PAREINC.csv'
+else:
+    filepath = '/Users/maycaj/Documents/HSI_III/Feb21_1x1_ContinuumRemoved_WLFiltered_Recrop_PAREINC.csv' # '/Users/maycaj/Documents/HSI_III/Feb21_1x1_ContinuumRemoved_WLFiltered_Recrop_PAREINC.csv' #'/Users/maycaj/Documents/HSI_III/1-22-25_5x5.csv'
+fracs = [1] # fraction of patches to include
+iterations = 4 # how many times to repeat the analysis
 threshold = 0.5 # what fraction of patches of edemaTrue to consider whole leg edemaTrue
 nmStartEnd = ['Wavelength_451.18','Wavelength_954.83'] # specify the wavelengths to include in analysis (1x1 continuum)
 # nmStartEnd = ['451.18','954.83'] # (5x5)
 
+start_time = time.time()
 data = pd.read_csv(filepath)
 # data = data[data['final_diagnosis_other'] == 'Cellulitis'] # select the cellulitis condition only
-data = data[data['ID'].isin([4,11,12,15,18,20,22,23,26,34,36])] # Select only cellulitis IDs
 
-selectedNums = [int(frac*data.shape[0]) for frac in fracs] # convert the fraction to a number of examples
+
+data = data[(data['ID'].isin([11,12,15,18,20,22,23,26,34,36])) | (data['Foldername'] =='EdemaFalse') ] # Select only cellulitis IDs or IDs in EdemaFalse Folder
+# data = data[data['ID'].isin([11,12,15,18,20,22,23,26,34,36])] # Select only cellulitis IDs
+
+
+selectedNums = [int(frac*data.shape[0]) for frac in fracs] # convert the fraction to a nu
 
 def splitByID(data, testRange):
     '''
@@ -54,6 +65,28 @@ def splitByID(data, testRange):
         if i == 99:
             print('Error: no test split found after 100 iterations')
     return trainData, testData
+
+def splitByLeg(data):
+    '''
+    splits each ID so each condition (EdemaTrue vs EdemaFalse) is randomly separated between training and testing
+    inputs:
+        data: hyperspectral dataframe
+    outputs:
+        trainData: training set
+        testData: testing set
+    '''
+    uniqIDs = data['ID'].unique()
+    trainData = pd.DataFrame([])
+    testData = pd.DataFrame([])
+    for ID in uniqIDs:
+        if np.random.rand() > 0.5: # add EdemaTrue to train and EdemaFalse to test
+            trainData = pd.concat([data[(data['ID'] == ID) & (data['Foldername'] == 'EdemaTrue')],trainData])
+            testData = pd.concat([data[(data['ID'] == ID) & (data['Foldername'] == 'EdemaFalse')],testData])
+        else: # add EdemaTrue to test and EdemaFalse to train
+            testData = pd.concat([data[(data['ID'] == ID) & (data['Foldername'] == 'EdemaTrue')],testData])
+            trainData = pd.concat([data[(data['ID'] == ID) & (data['Foldername'] == 'EdemaFalse')],trainData])
+    return trainData, testData
+
 
 def undersampleClass(data, classes):
     '''
@@ -207,7 +240,7 @@ for selectedNum in selectedNums:
 
         dataFrac = data.sample(n=selectedNum,random_state=random_state) # include a fraction of the data so debugging is fast
 
-        kf = KFold(n_splits=5, shuffle=True, random_state=random_state) #shuffle is important to avoid bias
+        kf = KFold(n_splits=2, shuffle=True, random_state=random_state) #shuffle is important to avoid bias
 
         # # # find a set of patient IDs that will go ONLY in testing or ONLY in training - a larger range makes it so that a wider range of ID+conditions are tested in less iterations
         # train, test = splitByID(dataFrac, [0.08,0.4]) 
@@ -221,6 +254,9 @@ for selectedNum in selectedNums:
             print(f'Test IDs: {testIDs}')
             train = dataFrac[dataFrac['ID'].isin(trainIDs)]
             test = dataFrac[dataFrac['ID'].isin(testIDs)].copy()
+            
+            # # within each ID, divide by condition such that EdemaTrue is in train and EdemaFalse is in test or vice versa
+            # train, _ = splitByLeg(train)
 
             # Undersample the majority class so there are equal numbers of each class
             train = undersampleClass(train, ['EdemaTrue','EdemaFalse'])
@@ -229,13 +265,13 @@ for selectedNum in selectedNums:
             # train = undersampleID(train)
 
             # Add weights such that each patient and each category is equally weighted
-            train['Weights'] = float(1)
+            # train['Weights'] = float(1)
             # Weight classes by True / False
             # weightClass(train)
             # Xweights = train['Weights']
 
             # print sum of weights and sum of examples
-            printWeights(train)
+            # printWeights(train)
 
             # select the X and the y from the data
             Xtrain = train.loc[:,nmStartEnd[0]:nmStartEnd[1]] # leave out noisy wavelengths
@@ -257,8 +293,9 @@ for selectedNum in selectedNums:
             # plt.show()
 
             # create SVM
-            # svc = SVC(kernel='linear') 
-            svc = SGDClassifier(loss='hinge', random_state=random_state) # stocastic
+            svc = SVC(kernel='linear')  
+
+            # svc = SGDClassifier(loss='hinge', random_state=random_state) # stocastic
 
             # fit SVM on data
             # svc.fit(pca.transform(Xtrain),yTrain)
@@ -294,11 +331,12 @@ for selectedNum in selectedNums:
             uniqFoldernames = test['Foldername'].unique()
             for ID in uniqIDs:
                 for foldername in uniqFoldernames:
-                    IDtestFolder = test[(test['ID']==ID) | (test['yTest']==foldername)]
+                    IDtestFolder = test[(test['ID']==ID) | (test['yTest']==foldername)] # find data for this id and this foldername
                     if not IDtestFolder.empty: # double check if this ID is in testing set
                         cm = confusion_matrix(IDtestFolder['yTest'],IDtestFolder['yPred'])
-                        TN, FP, FN, TP = cm.ravel()
-                        confusions = pd.concat([confusions, pd.DataFrame([[ID, foldername, TN, FP, FN, TP]], columns=['ID','Foldername','TN','FP','FN','TP'])])
+                        if cm.size != 1: # check to make sure the testing set doesn't only have one foldername
+                            TN, FP, FN, TP = cm.ravel()
+                            confusions = pd.concat([confusions, pd.DataFrame([[ID, foldername, TN, FP, FN, TP]], columns=['ID','Foldername','TN','FP','FN','TP'])])
                         pass
 
             # Create dataframe with ID, foldername, prediction, and coordinates
@@ -407,6 +445,8 @@ FolderRound = FolderRound.reset_index(inplace=False)
 IDaccs.loc[IDaccs['Labels']=='EdemaTrue','ID 0.5 Rounded Avg'] = FolderRound.loc[FolderRound['Foldername']=='EdemaTrue','ID 0.5 Rounded Avg']
 IDaccs.loc[IDaccs['Labels']=='EdemaFalse','ID 0.5 Rounded Avg'] = FolderRound.loc[FolderRound['Foldername']=='EdemaFalse','ID 0.5 Rounded Avg']
 
+end_time = time.time()
+print(f'Total time: {end_time-start_time}')
 
 def columnBarPlot(df, hasValues, labelsKey, valuesKey, errorKey, xlabel, ylabel, title):
     '''
@@ -427,13 +467,14 @@ def columnBarPlot(df, hasValues, labelsKey, valuesKey, errorKey, xlabel, ylabel,
     # plot bar chart
     fig, ax = plt.subplots()
     bars = ax.bar(labels, values, yerr=yerrPlot)
-    ax.tick_params(axis='x', labelsize=3)
+    ax.tick_params(axis='x', labelsize=5, rotation=90)
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.title(title + ' overall average=' + str(round(values['Column Average']*100,1))) 
+    return fig
 
-columnBarPlot(IDaccs, IDaccs['ID 0.5 Rounded Avg'].notna(),'Labels','ID 0.5 Rounded Avg','YerrRounded','ID \n Foldername','Accuracy',f'0.5 Rounded Accuracy by ID Foldername n={selectedNum} iterations={iterations}')
-columnBarPlot(IDaccs, IDaccs['ID Avg'].notna(),'Labels','ID Avg','Yerr','ID \n Foldername','Accuracy',f'Accuracy by ID Foldername n={selectedNum} iterations={iterations}')
+wholeLeg = columnBarPlot(IDaccs, IDaccs['ID 0.5 Rounded Avg'].notna(),'Labels','ID 0.5 Rounded Avg','YerrRounded','ID \n Foldername','Accuracy',f'Leg Acc n={selectedNum} iterations={iterations}')
+patch = columnBarPlot(IDaccs, IDaccs['ID Avg'].notna(),'Labels','ID Avg','Yerr','ID \n Foldername','Accuracy',f'Patch Acc n={selectedNum} iterations={iterations}')
 plt.show()
 
 # Find the confusion matricies for each ID
@@ -441,9 +482,22 @@ confusion = confusions.groupby(['ID','Foldername']).sum()
 confusion = confusion.reset_index()
 
 # add metadata and save 
+date = filepath.split('/')[-1].split('_')[0] # find date from file name
 IDaccs.loc['Info','Labels'] = f'input filename: {filepath.split("/")[-1]}' # add input filename
-IDaccs.to_csv(f'/Users/maycaj/Downloads/IDaccs_n={selectedNum}i={iterations}.csv') # Save the accuracy as csv
-PredLocs.to_csv(f'/Users/maycaj/Downloads/PredLocs_n={selectedNum}i={iterations}.csv.gz', compression='gzip', index=False) # Save predictions with locations as csv
-confusion.to_csv(f'/Users/maycaj/Downloads/confusion_n={selectedNum}i={iterations}.csv')
-confusions.to_csv(f'/Users/maycaj/Downloads/confusions_n={selectedNum}i={iterations}.csv')
+
+# save all of CSVs and pdfs
+if bioWulf:
+    IDaccs.to_csv(f'/data/maycaj/output/{date}IDaccs_n={selectedNum}i={iterations}.csv') # Save the accuracy as csv
+    PredLocs.to_csv(f'/data/maycaj/output/{date}PredLocs_n={selectedNum}i={iterations}.csv.gz', compression='gzip', index=False) # Save predictions with locations as csv
+    confusion.to_csv(f'/data/maycaj/output/{date}confusion_n={selectedNum}i={iterations}.csv')
+    confusions.to_csv(f'/data/maycaj/output/{date}confusions_n={selectedNum}i={iterations}.csv')
+    wholeLeg.savefig(f'/data/maycaj/output/{date}wholeLeg_n={selectedNum}i={iterations}.pdf')
+    patch.savefig(f'/data/maycaj/output/{date}patch_n={selectedNum}i={iterations}.pdf')
+else: # on local computer
+    IDaccs.to_csv(f'/Users/maycaj/Downloads/{date}IDaccs_n={selectedNum}i={iterations}.csv') # Save the accuracy as csv
+    PredLocs.to_csv(f'/Users/maycaj/Downloads/{date}PredLocs_n={selectedNum}i={iterations}.csv.gz', compression='gzip', index=False) # Save predictions with locations as csv
+    confusion.to_csv(f'/Users/maycaj/Downloads/{date}confusion_n={selectedNum}i={iterations}.csv')
+    confusions.to_csv(f'/Users/maycaj/Downloads/{date}confusions_n={selectedNum}i={iterations}.csv')
+    wholeLeg.savefig(f'/Users/maycaj/Downloads/{date}wholeLeg_n={selectedNum}i={iterations}.pdf')
+    patch.savefig(f'/Users/maycaj/Downloads/{date}patch_n={selectedNum}i={iterations}.pdf')
 print('All done ;)')
