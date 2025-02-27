@@ -1,3 +1,5 @@
+#!/Users/maycaj/Documents/HSI_III/.venv/bin/python3
+
 import scipy.io
 import numpy as np
 from sklearn.decomposition import PCA
@@ -16,22 +18,28 @@ from sklearn.model_selection import KFold
 from sklearn.svm import LinearSVC
 from sklearn.linear_model import SGDClassifier
 import time
+from joblib import Parallel, delayed
 
 
-# initialize filepath & number of samples
+# initialize parameters
 bioWulf = False # If we are running on bioWulf supercomputer
 if bioWulf:
     filepath = '/data/maycaj/PatchCSVs/Feb21_1x1_ContinuumRemoved_WLFiltered_Recrop_PAREINC.csv'
 else:
     filepath = '/Users/maycaj/Documents/HSI_III/Feb21_1x1_ContinuumRemoved_WLFiltered_Recrop_PAREINC.csv' # '/Users/maycaj/Documents/HSI_III/Feb21_1x1_ContinuumRemoved_WLFiltered_Recrop_PAREINC.csv' #'/Users/maycaj/Documents/HSI_III/1-22-25_5x5.csv'
 fracs = [1] # fraction of patches to include
-iterations = 4 # how many times to repeat the analysis
+iterations = 2 # how many times to repeat the analysis
 threshold = 0.5 # what fraction of patches of edemaTrue to consider whole leg edemaTrue
 nmStartEnd = ['Wavelength_451.18','Wavelength_954.83'] # specify the wavelengths to include in analysis (1x1 continuum)
 # nmStartEnd = ['451.18','954.83'] # (5x5)
+n_jobs = 1 # Number of CPUs to use during each Fold
+n_splits = 8 # number of splits to make the fold
+n_components = 40 # Number of PCA components
 
 start_time = time.time()
+print('Loading dataframe...')
 data = pd.read_csv(filepath)
+print('Done loading dataframe')
 # data = data[data['final_diagnosis_other'] == 'Cellulitis'] # select the cellulitis condition only
 
 
@@ -222,9 +230,7 @@ def plotPCAcomponents(pca):
 TN, FP, FN, TP = 0, 0, 0, 0 # initialize confusion matrix tally
 uniqIDs = data['ID'].unique() # find unique IDs
 
-IDaccs = pd.DataFrame(uniqIDs, columns=['ID']) # make a dataframe with accuracies for each ID
-IDaccs = IDaccs.loc[IDaccs.index.repeat(2)]  # Repeat each row twice
-IDaccs['Foldername'] = ['EdemaTrue', 'EdemaFalse'] * (len(IDaccs) // 2) # Add EdemaTrue and EdemaFalse to each row
+
 
 # Initialize a dataframe for Location of each classification
 PredLocs = pd.DataFrame([])
@@ -240,18 +246,21 @@ for selectedNum in selectedNums:
 
         dataFrac = data.sample(n=selectedNum,random_state=random_state) # include a fraction of the data so debugging is fast
 
-        kf = KFold(n_splits=2, shuffle=True, random_state=random_state) #shuffle is important to avoid bias
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state) #shuffle is important to avoid bias
 
         # # # find a set of patient IDs that will go ONLY in testing or ONLY in training - a larger range makes it so that a wider range of ID+conditions are tested in less iterations
         # train, test = splitByID(dataFrac, [0.08,0.4]) 
 
-        for foldNum, index in enumerate(kf.split(uniqIDs)):
+
+        # for foldNum, index in enumerate(kf.split(uniqIDs)):
             # select training and testing data from k-fold
-            train_index, val_index = index
+            # train_index, val_index = index
+
+        def process_fold(foldNum, train_index, test_index, i):
             trainIDs = uniqIDs[train_index]
-            testIDs = uniqIDs[val_index]
-            print(f'Train IDs: {trainIDs}')
-            print(f'Test IDs: {testIDs}')
+            testIDs = uniqIDs[test_index]
+            print(f'Fold {foldNum} Train IDs: {trainIDs}')
+            print(f'Fold {foldNum} Test IDs: {testIDs}')
             train = dataFrac[dataFrac['ID'].isin(trainIDs)]
             test = dataFrac[dataFrac['ID'].isin(testIDs)].copy()
             
@@ -284,7 +293,8 @@ for selectedNum in selectedNums:
             # Xtest = Xtest.apply(lambda row: row-np.mean(row), axis=1)
 
             # do PCA dimensionality reduction
-            pca = make_pipeline(StandardScaler(), PCA(n_components=30, random_state=random_state))
+            pca = make_pipeline(PCA(n_components=n_components, random_state=random_state))
+
             pca.fit(Xtrain, yTrain) # fit method's model
 
             # # inspect PCA
@@ -293,9 +303,9 @@ for selectedNum in selectedNums:
             # plt.show()
 
             # create SVM
-            svc = SVC(kernel='linear')  
+            # svc = SVC(kernel='linear')  
 
-            # svc = SGDClassifier(loss='hinge', random_state=random_state) # stocastic
+            svc = SGDClassifier(loss='hinge', n_jobs=-1, random_state=random_state) # stocastic
 
             # fit SVM on data
             # svc.fit(pca.transform(Xtrain),yTrain)
@@ -311,15 +321,15 @@ for selectedNum in selectedNums:
 
             yPred = svc.predict(XtestTransformed)
 
-            cm = confusion_matrix(yTest, yPred)
-            print(cm)  # Output: [[1 1], [1 2]]
-            TN = TN + cm[0, 0]  
-            FP = FP + cm[0, 1] 
-            FN = FN + cm[1, 0] 
-            TP = TP + cm[1, 1] 
-            patchAcc = (TN+TP)/(TN+TP+FN+FP)
-            print(f'Confusion matrix for all iterations: \n [[{TP}, {FP}],\n [{FN}, {TN}]]')
-            print(f'Patch Acc for all iterations: {patchAcc}')
+            # cm = confusion_matrix(yTest, yPred)
+            # print(cm)  # Output: [[1 1], [1 2]]
+            # TN = TN + cm[0, 0]  
+            # FP = FP + cm[0, 1] 
+            # FN = FN + cm[1, 0] 
+            # TP = TP + cm[1, 1] 
+            # patchAcc = (TN+TP)/(TN+TP+FN+FP)
+            # print(f'Confusion matrix for all iterations: \n [[{TP}, {FP}],\n [{FN}, {TN}]]')
+            # print(f'Patch Acc for all iterations: {patchAcc}')
 
 
             # add yTest and and yPred as columns of test
@@ -328,28 +338,29 @@ for selectedNum in selectedNums:
             test.loc[:,'yTest'] = yTest
 
             # Place confusion matrix info for this iteration into confusion - place all iterations in confusions
-            uniqFoldernames = test['Foldername'].unique()
-            for ID in uniqIDs:
-                for foldername in uniqFoldernames:
-                    IDtestFolder = test[(test['ID']==ID) | (test['yTest']==foldername)] # find data for this id and this foldername
-                    if not IDtestFolder.empty: # double check if this ID is in testing set
-                        cm = confusion_matrix(IDtestFolder['yTest'],IDtestFolder['yPred'])
-                        if cm.size != 1: # check to make sure the testing set doesn't only have one foldername
-                            TN, FP, FN, TP = cm.ravel()
-                            confusions = pd.concat([confusions, pd.DataFrame([[ID, foldername, TN, FP, FN, TP]], columns=['ID','Foldername','TN','FP','FN','TP'])])
-                        pass
+            confusionFold = pd.DataFrame([]) # find confusion matricies for this fold
+            uniqTestIDs = test['ID'].unique()
+            for ID in uniqTestIDs:
+                # find data for this id and this foldername
+                testID = test[(test['ID']==ID)] 
+                if not testID.empty: # double check if this ID is present in testing
+                    cm = confusion_matrix(testID['yTest'],testID['yPred'], labels=['EdemaTrue','EdemaFalse'])
+                    if cm.size != 1: # check to make sure the testing set doesn't only have one foldername
+                        TN, FP, FN, TP = cm.ravel()
+                        # confusions = pd.concat([confusions, pd.DataFrame([[ID, foldername, TN, FP, FN, TP]], columns=['ID','Foldername','TN','FP','FN','TP'])])
+                        confusionFold = pd.concat([confusionFold, pd.DataFrame([[foldNum, ID, TN, FP, FN, TP]], columns=['foldNum','ID','TN','FP','FN','TP'])])
+                    pass
 
-            # Create dataframe with ID, foldername, prediction, and coordinates
-            # PredLoc = test[['xLocation,yLocation,size','Foldername','ID','yPred']] # for 5x5
-            PredLoc = test[['X','Y','ID','yPred','FloatName','correct','Foldername']]
-            PredLocs = pd.concat([PredLocs, PredLoc])
+            # Create dataframe with ID, foldername, prediction, and coordinates for this fold
+            PredLocFold = test[['X','Y','ID','yPred','FloatName','correct','Foldername']].copy()
+            PredLocFold['foldNum'] = foldNum
 
-            # Create a dataframe with patch accuracy - add to IDaccs
-            print(f'Patch Acc this iteration: {np.mean(test["correct"])}')
-            IDacc = test.groupby(['ID','Foldername'])['correct'].mean() # find average accuracy per ID
-            IDacc = IDacc.to_frame(name=f'Iter {i} Fold {foldNum}') # convert to DataFrame
-            IDacc.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
-            IDaccs = IDaccs.merge(IDacc[['ID', 'Foldername', f'Iter {i} Fold {foldNum}']],on=['ID', 'Foldername'], how='left') # comment out when doing thresholding
+            print(f'Patch Acc Fold {foldNum} iteration {i}: {np.mean(test["correct"])}')
+
+            # Find accuracies on this fold
+            IDaccFold = test.groupby(['ID','Foldername'])['correct'].mean() # find average accuracy per ID
+            IDaccFold = IDaccFold.to_frame(name=f'Iter {i} Fold {foldNum}') # convert to DataFrame
+            IDaccFold.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
 
             # # Create a dataframe with thresholding 
             # test['yPred Binary'] = test['yPred'].map({'EdemaTrue':True, 'EdemaFalse':False}) # map string labels to booleans
@@ -360,7 +371,35 @@ for selectedNum in selectedNums:
             # IDthresh[f'Iter {i} Fold {foldNum}'] = IDthresh[f'Iter {i} Fold {foldNum}'].astype(int) # convert boolean to integer
             # IDaccs = IDaccs.merge(IDthresh[['ID', 'Foldername', f'Iter {i} Fold {foldNum}']],on=['ID', 'Foldername'], how='left') # merge IDthresh values with the overall IDaccs
             
-            pass
+            return confusionFold, PredLocFold, IDaccFold
+        
+        # Run each fold in parallel
+        foldOutput = Parallel(n_jobs=n_jobs)(
+            delayed(process_fold)(foldNum, train_index, test_index, i)
+            for foldNum, (train_index, test_index) in enumerate(kf.split(uniqIDs))
+        )
+        # unpack then process output
+        confusionFold, PredLocFold, IDaccFold = zip(*foldOutput) 
+        confusionFold = pd.concat(confusionFold, ignore_index=True)
+        PredLocFold = pd.concat(PredLocFold, ignore_index=True)
+        IDaccFold = pd.concat(IDaccFold, ignore_index=True)
+
+        # add outputs to 
+        confusions = pd.concat([confusions, confusionFold])
+        PredLocs = pd.concat([PredLocs, PredLocFold])
+
+        if i == 0:
+            IDaccs = IDaccFold
+        else: 
+            IDaccs = IDaccs.merge(IDaccFold, on=['ID','Foldername'], how='left')
+        # IDaccs = pd.DataFrame(uniqIDs, columns=['ID']) # make a dataframe with accuracies for each ID
+        # IDaccs = IDaccs.loc[IDaccs.index.repeat(2)]  # Repeat each row twice
+        # IDaccs['Foldername'] = ['EdemaTrue', 'EdemaFalse'] * (len(IDaccs) // 2) # Add EdemaTrue and EdemaFalse to each row
+        # IDaccs = IDaccs.merge(IDaccFold[['ID', 'Foldername', f'Iter {i} Fold {foldNum}']],on=['ID', 'Foldername'], how='left') # comment out when doing thresholding
+
+
+        pass
+
 
 def roundCells(cell, thresh):
     '''
@@ -410,7 +449,8 @@ IDaccs.loc['Column Average'] = IDaccs.drop(['ID','Foldername'], axis=1).mean(axi
 
 # apply 95% CI to iterations data
 hasFolderHasAvg = (IDaccs.loc[:,'Foldername'].notna()) | (IDaccs.index == 'Column Average') # select rows with folder names and the column average
-iteration = IDaccs.loc[hasFolderHasAvg, 'Iter 0 Fold 0':f'Iter {i} Fold {foldNum}'] # select all of iteration data
+iteration = IDaccs.loc[hasFolderHasAvg, 'Iter 0 Fold 0':f'Iter {i} Fold {n_splits-1}'] # select all of iteration data
+# iteration = IDaccs.loc[hasFolderHasAvg, 'Iter 0 Fold 0':f'Iter {i} Fold {foldNum}'] # select all of iteration data
 CI95 = iteration.apply(lambda row: bootstrapRow(row), axis=1)
 IDaccs.insert(3, '95%CI', CI95)
 CI95round = iteration.apply(lambda row: bootstrapRow(row, round=True), axis=1)
@@ -478,7 +518,7 @@ patch = columnBarPlot(IDaccs, IDaccs['ID Avg'].notna(),'Labels','ID Avg','Yerr',
 plt.show()
 
 # Find the confusion matricies for each ID
-confusion = confusions.groupby(['ID','Foldername']).sum()
+confusion = confusions.groupby('ID').sum()
 confusion = confusion.reset_index()
 
 # add metadata and save 
