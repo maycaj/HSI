@@ -21,34 +21,43 @@ import time
 from joblib import Parallel, delayed
 
 
-# initialize parameters
+## INITIALIZE PARAMETERS
 bioWulf = False # If we are running on bioWulf supercomputer
 if bioWulf:
     filepath = '/data/maycaj/PatchCSVs/Feb21_1x1_ContinuumRemoved_WLFiltered_Recrop_PAREINC.csv'
 else:
-    filepath = '/Users/maycaj/Documents/HSI_III/Feb21_1x1_ContinuumRemoved_WLFiltered_Recrop_PAREINC.csv' # '/Users/maycaj/Documents/HSI_III/Feb21_1x1_ContinuumRemoved_WLFiltered_Recrop_PAREINC.csv' #'/Users/maycaj/Documents/HSI_III/1-22-25_5x5.csv'
-fracs = [1] # fraction of patches to include
-iterations = 2 # how many times to repeat the analysis
+    filepath = '/Users/maycaj/Documents/HSI_III/Mar4_1x1_ContinuumRemoved_WLFiltered_Recrop_Gender.csv' # '/Users/maycaj/Documents/HSI_III/Feb21_1x1_ContinuumRemoved_WLFiltered_Recrop_PAREINC.csv' #'/Users/maycaj/Documents/HSI_III/1-22-25_5x5.csv'
+fracs = [0.01] # fraction of patches to include
+iterations = 3 # how many times to repeat the analysis
 threshold = 0.5 # what fraction of patches of edemaTrue to consider whole leg edemaTrue
 nmStartEnd = ['Wavelength_451.18','Wavelength_954.83'] # specify the wavelengths to include in analysis (1x1 continuum)
 # nmStartEnd = ['451.18','954.83'] # (5x5)
-n_jobs = 1 # Number of CPUs to use during each Fold
-n_splits = 8 # number of splits to make the fold
+n_jobs = -1 # Number of CPUs to use during each Fold. -1 = as many as possible
+n_splits = 14 # number of splits to make the fold
 n_components = 40 # Number of PCA components
+stochastic = False
+y_col = 'Gender'
+y_categories = ['Male','Female'] # [0,1] is [short, tall]
 
 start_time = time.time()
 print('Loading dataframe...')
 data = pd.read_csv(filepath)
 print('Done loading dataframe')
+
+
+
+## PROCESS DATA FOR CERTAIN y
 # data = data[data['final_diagnosis_other'] == 'Cellulitis'] # select the cellulitis condition only
 
-
-data = data[(data['ID'].isin([11,12,15,18,20,22,23,26,34,36])) | (data['Foldername'] =='EdemaFalse') ] # Select only cellulitis IDs or IDs in EdemaFalse Folder
+# data['patient_skin_type'] = data['patient_skin_type'].apply(lambda x: 0 if x <= 2 else 1) # divide patients evenly by skin type
+# data = data[(data['ID'].isin([0,11,12,15,18,20,22,23,26,34,36])) | (data['Foldername'] =='EdemaFalse') ] # Select only cellulitis IDs or IDs in EdemaFalse Folder
 # data = data[data['ID'].isin([11,12,15,18,20,22,23,26,34,36])] # Select only cellulitis IDs
 
+# data = data[data['ID'] != 0] # Remove Dr. Pare
+# data = data.dropna(subset=['patient_height']) # Remove all patients that are not 
+# data['patient_height'] = data['patient_height'].apply(lambda x: 0 if x < 68 else 1) # 1 = tall (above 68in)
 
-selectedNums = [int(frac*data.shape[0]) for frac in fracs] # convert the fraction to a nu
-
+## INITIALIZE FUNCTIONS
 def splitByID(data, testRange):
     '''
     splits data into training and testing by ID number
@@ -96,17 +105,18 @@ def splitByLeg(data):
     return trainData, testData
 
 
-def undersampleClass(data, classes):
+def undersampleClass(data, classes, columnLabel):
     '''
     Evens out class imbalances via undersampling
     Args:
         data: pandas dataframe 
         classes: string of binary classes to undersample ['class1','class2']
+        columnLabel: string label of the column where undersampling occurs
     Returns:
         undersampled data dataframe
     '''
-    dataTrue = data[data['Foldername'] == classes[0]]
-    dataFalse = data[data['Foldername'] == classes[1]]
+    dataTrue = data[data[columnLabel] == classes[0]]
+    dataFalse = data[data[columnLabel] == classes[1]]
     minLen = int(min(dataTrue.shape[0],dataFalse.shape[0])) # find maximum number for each class
     trueSample = dataTrue.sample(n=minLen, random_state=random_state)
     falseSample = dataFalse.sample(n=minLen, random_state=random_state)
@@ -171,30 +181,29 @@ def weightClass(data):
     #     dataUnder.loc[(dataUnder['Foldername'] == folderName) | (dataUnder['ID'] == ID), 'Weights'] /= total
 
 
-def printWeights(data):
+def summarizeData(data):
     '''
     prints out the sums of the weights and the sums of the samples by Id and by T/F
     args: 
         data: dataframe 
     '''
-    # Print out the sums of the weights for: 1) Each ID 2) T vs F
-    for ID in uniqIDs:
-        IDweight = sum(data.loc[data['ID'] == ID,'Weights'])
-        print(f'{ID} weight sum: {IDweight}')
+    # # Print out the sums of the weights for: 1) Each ID 2) T vs F
+    # for ID in uniqIDs:
+    #     IDweight = sum(data.loc[data['ID'] == ID,'Weights'])
+    #     print(f'{ID} weight sum: {IDweight}')
 
-    trueWeight =  sum(data.loc[data['Foldername']=='EdemaTrue','Weights'])
-    falseWeight = sum(data.loc[data['Foldername']=='EdemaFalse','Weights'])
-    print(f'True Weight sum: {trueWeight}')
-    print(f'False Weight sum: {falseWeight}')
+    # trueWeight =  sum(data.loc[data['Foldername']=='EdemaTrue','Weights'])
+    # falseWeight = sum(data.loc[data['Foldername']=='EdemaFalse','Weights'])
+    # print(f'True Weight sum: {trueWeight}')
+    # print(f'False Weight sum: {falseWeight}')
 
     # print out numbers of samples
     for ID in uniqIDs:
         IDsum = sum(data['ID'] == ID)
         print(f'{ID} total: {IDsum}')
-    trueSum = sum(data['Foldername']=='EdemaTrue')
-    falseSum = sum(data['Foldername']=='EdemaFalse')
-    print(f'True total: {trueSum}')
-    print(f'False total: {falseSum}')
+    trueSum = sum(data[y_col]==y_categories[1])
+    falseSum = sum(data[y_col]==y_categories[0])
+    print(f'{y_categories[0]} total: {falseSum} | {y_categories[1]} total: {trueSum}')
 
 def plotScree(pca, title):
     '''
@@ -227,10 +236,10 @@ def plotPCAcomponents(pca):
     plt.xlabel('Band (nm)')
     plt.ylabel('Absolute value of Weight')
 
+
+## FIT MODELS AND SAVE OUTPUT
 TN, FP, FN, TP = 0, 0, 0, 0 # initialize confusion matrix tally
 uniqIDs = data['ID'].unique() # find unique IDs
-
-
 
 # Initialize a dataframe for Location of each classification
 PredLocs = pd.DataFrame([])
@@ -238,6 +247,7 @@ PredLocs = pd.DataFrame([])
 # Initialize a dataframe for confusion matricies
 confusions = pd.DataFrame(columns=['ID','TN','FP','FN','TP'])
 
+selectedNums = [int(frac*data.shape[0]) for frac in fracs] # convert the fraction to a nu
 # Loop over the selected number of data and each iteration
 for selectedNum in selectedNums:
     for i in range(iterations): # iterate multiple times for error bars
@@ -247,14 +257,6 @@ for selectedNum in selectedNums:
         dataFrac = data.sample(n=selectedNum,random_state=random_state) # include a fraction of the data so debugging is fast
 
         kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state) #shuffle is important to avoid bias
-
-        # # # find a set of patient IDs that will go ONLY in testing or ONLY in training - a larger range makes it so that a wider range of ID+conditions are tested in less iterations
-        # train, test = splitByID(dataFrac, [0.08,0.4]) 
-
-
-        # for foldNum, index in enumerate(kf.split(uniqIDs)):
-            # select training and testing data from k-fold
-            # train_index, val_index = index
 
         def process_fold(foldNum, train_index, test_index, i):
             trainIDs = uniqIDs[train_index]
@@ -268,29 +270,19 @@ for selectedNum in selectedNums:
             # train, _ = splitByLeg(train)
 
             # Undersample the majority class so there are equal numbers of each class
-            train = undersampleClass(train, ['EdemaTrue','EdemaFalse'])
-
-            # # Undersample by ID
-            # train = undersampleID(train)
-
-            # Add weights such that each patient and each category is equally weighted
-            # train['Weights'] = float(1)
-            # Weight classes by True / False
-            # weightClass(train)
-            # Xweights = train['Weights']
+            # train = undersampleClass(train, ['EdemaTrue','EdemaFalse'], 'Foldername')
+            train = undersampleClass(train, y_categories, y_col)
 
             # print sum of weights and sum of examples
-            # printWeights(train)
+            summarizeData(train)
 
             # select the X and the y from the data
             Xtrain = train.loc[:,nmStartEnd[0]:nmStartEnd[1]] # leave out noisy wavelengths
-            yTrain = train['Foldername']
+            # yTrain = train['Foldername']
+            yTrain = train[y_col] # binary separation – 2 and below vs 3 and above
             Xtest = test.loc[:,nmStartEnd[0]:nmStartEnd[1]]
-            yTest = test['Foldername']
-            
-            # # Subtract each sample's mean from itself to get rid of flat PCA in first dimension (Subtracting mean worsens accuracy)
-            # Xtrain = Xtrain.apply(lambda row: row-np.mean(row), axis=1)
-            # Xtest = Xtest.apply(lambda row: row-np.mean(row), axis=1)
+            # yTest = test['Foldername']
+            yTest = test[y_col]
 
             # do PCA dimensionality reduction
             pca = make_pipeline(PCA(n_components=n_components, random_state=random_state))
@@ -303,34 +295,16 @@ for selectedNum in selectedNums:
             # plt.show()
 
             # create SVM
-            # svc = SVC(kernel='linear')  
-
-            svc = SGDClassifier(loss='hinge', n_jobs=-1, random_state=random_state) # stocastic
+            if stochastic:
+                svc = SGDClassifier(loss='hinge', random_state=random_state) # stocastic
+            else:
+                svc = SVC(kernel='linear')  
 
             # fit SVM on data
-            # svc.fit(pca.transform(Xtrain),yTrain)
-            # scaler = StandardScaler()
-            # svc.fit(scaler.fit_transform(pca.transform(Xtrain)),yTrain) # include standard scaler
             svc.fit(pca.transform(Xtrain),yTrain)
-            # svc.fit(pca.transform(Xtrain),yTrain,sample_weight=Xweights) # for weights
-            # svc.fit(Xtrain, yTrain) # for no dim reduction
-
             XtestTransformed = pca.transform(Xtest)
-            # XtestTransformed = scaler.transform(pca.transform(Xtest)) # for standard scaling
-            # XtestTransformed = Xtest # for no dim reduction
 
             yPred = svc.predict(XtestTransformed)
-
-            # cm = confusion_matrix(yTest, yPred)
-            # print(cm)  # Output: [[1 1], [1 2]]
-            # TN = TN + cm[0, 0]  
-            # FP = FP + cm[0, 1] 
-            # FN = FN + cm[1, 0] 
-            # TP = TP + cm[1, 1] 
-            # patchAcc = (TN+TP)/(TN+TP+FN+FP)
-            # print(f'Confusion matrix for all iterations: \n [[{TP}, {FP}],\n [{FN}, {TN}]]')
-            # print(f'Patch Acc for all iterations: {patchAcc}')
-
 
             # add yTest and and yPred as columns of test
             test.loc[:,'correct'] = yTest == yPred # add a column that displays if answer is correct
@@ -344,7 +318,8 @@ for selectedNum in selectedNums:
                 # find data for this id and this foldername
                 testID = test[(test['ID']==ID)] 
                 if not testID.empty: # double check if this ID is present in testing
-                    cm = confusion_matrix(testID['yTest'],testID['yPred'], labels=['EdemaTrue','EdemaFalse'])
+                    cm = confusion_matrix(testID['yTest'],testID['yPred'], labels=y_categories)
+                    # cm = confusion_matrix(testID['yTest'],testID['yPred'], labels=['EdemaTrue','EdemaFalse'])
                     if cm.size != 1: # check to make sure the testing set doesn't only have one foldername
                         TN, FP, FN, TP = cm.ravel()
                         # confusions = pd.concat([confusions, pd.DataFrame([[ID, foldername, TN, FP, FN, TP]], columns=['ID','Foldername','TN','FP','FN','TP'])])
@@ -352,25 +327,16 @@ for selectedNum in selectedNums:
                     pass
 
             # Create dataframe with ID, foldername, prediction, and coordinates for this fold
-            PredLocFold = test[['X','Y','ID','yPred','FloatName','correct','Foldername']].copy()
+            PredLocFold = test[['X','Y','ID','yPred','FloatName','correct',y_col]].copy()
             PredLocFold['foldNum'] = foldNum
 
             print(f'Patch Acc Fold {foldNum} iteration {i}: {np.mean(test["correct"])}')
 
             # Find accuracies on this fold
-            IDaccFold = test.groupby(['ID','Foldername'])['correct'].mean() # find average accuracy per ID
+            IDaccFold = test.groupby(['ID',y_col])['correct'].mean() # find average accuracy per ID
             IDaccFold = IDaccFold.to_frame(name=f'Iter {i} Fold {foldNum}') # convert to DataFrame
             IDaccFold.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
 
-            # # Create a dataframe with thresholding 
-            # test['yPred Binary'] = test['yPred'].map({'EdemaTrue':True, 'EdemaFalse':False}) # map string labels to booleans
-            # IDthresh = test.groupby(['ID','Foldername'])['yPred Binary'].mean() # find the fraction prediction of being true
-            # IDthresh = IDthresh.to_frame(name='yPred Binary') # convert to DataFrame
-            # IDthresh.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
-            # IDthresh[f'Iter {i} Fold {foldNum}'] = ((IDthresh['Foldername'] == 'EdemaTrue') & (IDthresh['yPred Binary'] > threshold)) | ((IDthresh['Foldername'] == 'EdemaFalse') & (IDthresh['yPred Binary'] <= threshold)) # find bollean values for correctness
-            # IDthresh[f'Iter {i} Fold {foldNum}'] = IDthresh[f'Iter {i} Fold {foldNum}'].astype(int) # convert boolean to integer
-            # IDaccs = IDaccs.merge(IDthresh[['ID', 'Foldername', f'Iter {i} Fold {foldNum}']],on=['ID', 'Foldername'], how='left') # merge IDthresh values with the overall IDaccs
-            
             return confusionFold, PredLocFold, IDaccFold
         
         # Run each fold in parallel
@@ -391,16 +357,10 @@ for selectedNum in selectedNums:
         if i == 0:
             IDaccs = IDaccFold
         else: 
-            IDaccs = IDaccs.merge(IDaccFold, on=['ID','Foldername'], how='left')
-        # IDaccs = pd.DataFrame(uniqIDs, columns=['ID']) # make a dataframe with accuracies for each ID
-        # IDaccs = IDaccs.loc[IDaccs.index.repeat(2)]  # Repeat each row twice
-        # IDaccs['Foldername'] = ['EdemaTrue', 'EdemaFalse'] * (len(IDaccs) // 2) # Add EdemaTrue and EdemaFalse to each row
-        # IDaccs = IDaccs.merge(IDaccFold[['ID', 'Foldername', f'Iter {i} Fold {foldNum}']],on=['ID', 'Foldername'], how='left') # comment out when doing thresholding
-
-
+            IDaccs = IDaccs.merge(IDaccFold, on=['ID',y_col], how='left')
         pass
 
-
+## PROCESS OUTPUT DATA
 def roundCells(cell, thresh):
     '''
     rounds cells to desired threshold
@@ -414,11 +374,11 @@ def roundCells(cell, thresh):
     return output
 
 #Add averages to dataframe
-IDavg = IDaccs.drop(['ID','Foldername'], axis=1).T.mean() #Exclude the non-numerical data, and find mean across IDs using transpose
+IDavg = IDaccs.drop(['ID',y_col], axis=1).T.mean() #Exclude the non-numerical data, and find mean across IDs using transpose
 IDaccs.insert(2,'ID Avg',IDavg) # Insert ID average
 for thresh in [threshold]: # np.arange(0.3,0.7,0.1): # iterate over possible thresholds
     thresh = np.round(thresh, 1)
-    IDroundAvg = IDaccs.drop(['ID','Foldername'], axis=1).T.apply(lambda cell: roundCells(cell,thresh)).mean() # round cells to threshold (thresh) and then take the mean across the rows
+    IDroundAvg = IDaccs.drop(['ID',y_col], axis=1).T.apply(lambda cell: roundCells(cell,thresh)).mean() # round cells to threshold (thresh) and then take the mean across the rows
     IDaccs.insert(2,f'ID {thresh} Rounded Avg',IDroundAvg) # add thresholded values as a new column
 
 
@@ -445,10 +405,10 @@ def bootstrapRow(row, round=False):
     return upperLower
 
 # add average across columns
-IDaccs.loc['Column Average'] = IDaccs.drop(['ID','Foldername'], axis=1).mean(axis=0) 
+IDaccs.loc['Column Average'] = IDaccs.drop(['ID',y_col], axis=1).mean(axis=0) 
 
 # apply 95% CI to iterations data
-hasFolderHasAvg = (IDaccs.loc[:,'Foldername'].notna()) | (IDaccs.index == 'Column Average') # select rows with folder names and the column average
+hasFolderHasAvg = (IDaccs.loc[:,y_col].notna()) | (IDaccs.index == 'Column Average') # select rows with folder names and the column average
 iteration = IDaccs.loc[hasFolderHasAvg, 'Iter 0 Fold 0':f'Iter {i} Fold {n_splits-1}'] # select all of iteration data
 # iteration = IDaccs.loc[hasFolderHasAvg, 'Iter 0 Fold 0':f'Iter {i} Fold {foldNum}'] # select all of iteration data
 CI95 = iteration.apply(lambda row: bootstrapRow(row), axis=1)
@@ -470,23 +430,24 @@ yerrRounded = IDaccs.loc[:,'95%CIround'].apply(halfDifference)
 IDaccs.insert(2, 'YerrRounded', yerrRounded)
 
 # find values to plot in bar chart
-IDaccs.insert(2,'Labels',IDaccs['ID'].astype(str) + '\n' + IDaccs['Foldername']) # combine columns for figure labels
+IDaccs.insert(2,'Labels','ID: ' + IDaccs['ID'].astype(str) + '\n' + 'Cat: ' + IDaccs[y_col].astype(str)) # combine columns for figure labels
 IDaccs.loc['Column Average','Labels'] = 'Column Average'
 
 # Find accuracy by Foldername; Add to IDaccs
-FolderAcc = IDaccs.groupby('Foldername')['ID Avg'].mean() # find accuracy by foldername
+FolderAcc = IDaccs.groupby(y_col)['ID Avg'].mean() # find accuracy by foldername
 FolderAcc = FolderAcc.reset_index(inplace=False)
-FolderAcc['Labels'] = FolderAcc['Foldername']
+FolderAcc['Labels'] = FolderAcc[y_col]
 IDaccs = pd.concat([IDaccs, FolderAcc], axis=0)
 
 # Find rounded accuracy by Foldername; Add to IDaccs
-FolderRound = IDaccs.groupby('Foldername')['ID 0.5 Rounded Avg'].mean()
+FolderRound = IDaccs.groupby(y_col)['ID 0.5 Rounded Avg'].mean() # rounded accuracy grouped by y_col categories
 FolderRound = FolderRound.reset_index(inplace=False)
-IDaccs.loc[IDaccs['Labels']=='EdemaTrue','ID 0.5 Rounded Avg'] = FolderRound.loc[FolderRound['Foldername']=='EdemaTrue','ID 0.5 Rounded Avg']
-IDaccs.loc[IDaccs['Labels']=='EdemaFalse','ID 0.5 Rounded Avg'] = FolderRound.loc[FolderRound['Foldername']=='EdemaFalse','ID 0.5 Rounded Avg']
+IDaccs.loc[IDaccs['Labels']==y_categories[1],'ID 0.5 Rounded Avg'] = FolderRound.loc[FolderRound[y_col]==y_categories[1],'ID 0.5 Rounded Avg']
+IDaccs.loc[IDaccs['Labels']==y_categories[0],'ID 0.5 Rounded Avg'] = FolderRound.loc[FolderRound[y_col]==y_categories[0],'ID 0.5 Rounded Avg']
 
 end_time = time.time()
 print(f'Total time: {end_time-start_time}')
+
 
 def columnBarPlot(df, hasValues, labelsKey, valuesKey, errorKey, xlabel, ylabel, title):
     '''
@@ -501,6 +462,7 @@ def columnBarPlot(df, hasValues, labelsKey, valuesKey, errorKey, xlabel, ylabel,
     '''
     labels = df[hasValues][labelsKey] # labels for bar chart
     labels.loc['Column Average'] = 'Column Average' # add label for column average
+    labels = labels.astype(str)
     values = df[hasValues][valuesKey] # y values for bar chart
     yerrPlot = df[hasValues][errorKey]
     yerrPlot = np.vstack(yerrPlot).T # errors for bar chart
@@ -513,8 +475,8 @@ def columnBarPlot(df, hasValues, labelsKey, valuesKey, errorKey, xlabel, ylabel,
     plt.title(title + ' overall average=' + str(round(values['Column Average']*100,1))) 
     return fig
 
-wholeLeg = columnBarPlot(IDaccs, IDaccs['ID 0.5 Rounded Avg'].notna(),'Labels','ID 0.5 Rounded Avg','YerrRounded','ID \n Foldername','Accuracy',f'Leg Acc n={selectedNum} iterations={iterations}')
-patch = columnBarPlot(IDaccs, IDaccs['ID Avg'].notna(),'Labels','ID Avg','Yerr','ID \n Foldername','Accuracy',f'Patch Acc n={selectedNum} iterations={iterations}')
+wholeLeg = columnBarPlot(IDaccs, IDaccs['ID 0.5 Rounded Avg'].notna(),'Labels','ID 0.5 Rounded Avg','YerrRounded',f'ID \n {y_col}','Accuracy',f'{y_col} Leg Acc n={selectedNum} iterations={iterations}')
+patch = columnBarPlot(IDaccs, IDaccs['ID Avg'].notna(),'Labels','ID Avg','Yerr',f'ID \n {y_col}','Accuracy',f'{y_col} Patch Acc n={selectedNum} iterations={iterations}')
 plt.show()
 
 # Find the confusion matricies for each ID
