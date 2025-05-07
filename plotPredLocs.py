@@ -16,8 +16,11 @@ def highlight_pixels(csv_path, image_folder, output_folder, pred_col):
 
 
     df = pd.read_csv(csv_path)
- 
     os.makedirs(output_folder, exist_ok=True)
+
+    # convert relevant column to percentiles
+    df = df[df[pred_col] > df[pred_col].quantile(0.01)]
+    df = df[df[pred_col] < df[pred_col].quantile(0.99)]
    
     # Get unique images
     unique_images = df['FloatName'].unique()

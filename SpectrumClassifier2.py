@@ -19,6 +19,13 @@ from sklearn.svm import LinearSVC
 from sklearn.linear_model import SGDClassifier
 import time
 from joblib import Parallel, delayed
+import matplotlib.colors as mcolors
+import plotly.express as px
+import plotly.graph_objects as go
+from sklearn.cross_decomposition import PLSRegression
+from sklearn.metrics import mean_squared_error
+
+
 
 
 ## INITIALIZE PARAMETERS
@@ -26,38 +33,164 @@ bioWulf = False # If we are running on bioWulf supercomputer
 if bioWulf:
     filepath = '/data/maycaj/PatchCSVs/Feb21_1x1_ContinuumRemoved_WLFiltered_Recrop_PAREINC.csv'
 else:
-    filepath = '/Users/maycaj/Documents/HSI_III/Mar4_1x1_ContinuumRemoved_WLFiltered_Recrop_Gender.csv' # '/Users/maycaj/Documents/HSI_III/Feb21_1x1_ContinuumRemoved_WLFiltered_Recrop_PAREINC.csv' #'/Users/maycaj/Documents/HSI_III/1-22-25_5x5.csv'
+    filepath = '/Users/maycaj/Documents/HSI_III/PatchCSVs/Feb4_1x1_ContinuumRemoved_WLFiltered.csv' #'/Users/maycaj/Documents/HSI_III/Mar4_1x1_ContinuumRemoved_WLFiltered_Recrop_Gender.csv' #'/Users/maycaj/Documents/HSI_III/Mar4_1x1_ContinuumRemoved_WLFiltered_Recrop_Gender.csv' # '/Users/maycaj/Documents/HSI_III/Mar10_Noarm.csv' # '/Users/maycaj/Documents/HSI_III/Feb21_1x1_ContinuumRemoved_WLFiltered_Recrop_PAREINC.csv' #'/Users/maycaj/Documents/HSI_III/1-22-25_5x5.csv'
 fracs = [0.01] # fraction of patches to include
-iterations = 3 # how many times to repeat the analysis
+iterations = 10 # how many times to repeat the analysis
 threshold = 0.5 # what fraction of patches of edemaTrue to consider whole leg edemaTrue
-nmStartEnd = ['Wavelength_451.18','Wavelength_954.83'] # specify the wavelengths to include in analysis (1x1 continuum)
-# nmStartEnd = ['451.18','954.83'] # (5x5)
+nmStartEnd = ['Wavelength_451.18','Wavelength_954.83'] # ['Wavelength_760.61','Wavelength_760.61']# ['Wavelength_451.18','Wavelength_954.83'] # specify the wavelengths to include in analysis (1x1 continuum)
+# nmStartEnd = ['451.18','954.83'] 
 n_jobs = -1 # Number of CPUs to use during each Fold. -1 = as many as possible
-n_splits = 14 # number of splits to make the fold
+n_splits = 10 # number of splits to make the fold
 n_components = 40 # Number of PCA components
 stochastic = False
-y_col = 'Gender'
-y_categories = ['Male','Female'] # [0,1] is [short, tall]
+y_col = 'Foldername' # 'patient_height' #'patient_skin_type' # 'Gender'
 
 start_time = time.time()
 print('Loading dataframe...')
 data = pd.read_csv(filepath)
-print('Done loading dataframe')
-
-
+print(f'Done loading dataframe ({np.round(time.time()-start_time,1)}s)')
+y_categories = data[y_col].unique() # ['Male','Female'] # [0,1] is [short, tall] and [pale, dark]
 
 ## PROCESS DATA FOR CERTAIN y
 # data = data[data['final_diagnosis_other'] == 'Cellulitis'] # select the cellulitis condition only
 
 # data['patient_skin_type'] = data['patient_skin_type'].apply(lambda x: 0 if x <= 2 else 1) # divide patients evenly by skin type
-# data = data[(data['ID'].isin([0,11,12,15,18,20,22,23,26,34,36])) | (data['Foldername'] =='EdemaFalse') ] # Select only cellulitis IDs or IDs in EdemaFalse Folder
-# data = data[data['ID'].isin([11,12,15,18,20,22,23,26,34,36])] # Select only cellulitis IDs
+data = data[(data['ID'].isin([11,12,15,18,20,22,23,26,34,36])) | (data['Foldername'] =='EdemaFalse') ] # Select only cellulitis IDs or IDs in EdemaFalse Folder
+# data = data[(data['ID'].isin([1,2,6,7,9,10,13,14,19,24,27,29,30,31,32,33,35,37,38,39,40])) | (data['Foldername'] =='EdemaFalse') ] # Select only Peripheral IDs or IDs in EdemaFalse Folder
+# data = pd.concat([data.loc[:,nmStartEnd[0]:nmStartEnd[1]],data['ID'], data['Foldername']], axis=1)
+# data = data.groupby(['ID','Foldername'], as_index=False).median()
 
+# keep this section together for height: need to remove Dr. pare and the other patients who don't have heights
 # data = data[data['ID'] != 0] # Remove Dr. Pare
-# data = data.dropna(subset=['patient_height']) # Remove all patients that are not 
+# data = data.dropna(subset=['patient_height']); # Remove all patients that do not have heights
 # data['patient_height'] = data['patient_height'].apply(lambda x: 0 if x < 68 else 1) # 1 = tall (above 68in)
 
 ## INITIALIZE FUNCTIONS
+def convolve_spectra(data, nmStartEnd, spectraName, outputName, absorbPath, showFig):
+    '''
+    Takes dataframe and convolves the spectra with Hemoglobin's response curve to see the total absorbance of hemoglobin in the skin.
+    Args:
+        data: main pandas dataframe with wavelength and demographic data
+        nmStartEnd: [startingWavelength, endingWavelength] in data
+        spectraName: Name of column in the absorbance csv
+        absorbPath: path to .csv with the absorbances
+        showFig: boolean whether or not to plot
+    '''
+    absorbCSV = pd.read_csv(absorbPath) # Load the HbO2 spectra
+    skinWaves = list(data.loc[:,nmStartEnd[0]:nmStartEnd[1]].columns)
+    skinWaves = [float(wavelength.split('_')[1]) for wavelength in skinWaves] # Find wavelengths in skindata
+
+    absorbWaves = []
+    for wavelength in skinWaves: # match the data wavelengths with the wavelengths on the absorbance spectra
+        absorbWaves.append(min(absorbCSV['lambda nm'], key=lambda x: np.abs(x-wavelength))) 
+    matchedWave = pd.DataFrame({'AbsorbWaves': absorbWaves, 'SkinWaves': skinWaves})
+
+    # remove the Skin Wave Values that are outside of the range of the absorbance values
+    maxSkin = float('inf')
+    minSkin = float('inf')
+    for wavelength in skinWaves: # find the maximum and minimum wavelengths in the skin waves
+        # Looking for the closest absorbance to the highest skin wavelength
+        maxDiff = np.abs(max(matchedWave['AbsorbWaves'])-wavelength) # absolute difference between highest absorbance wavelength and each skin wavelength
+        if maxDiff < maxSkin: # if the absolute difference is lower than all the others we have seen before, update the threshold for the absolute difference, and find the new max wavelength
+            maxSkin = maxDiff
+            maxWavelength = wavelength
+        # Looking for the closest absorbance to the lowest skin wavelength
+        minDiff = np.abs(min(matchedWave['AbsorbWaves'])-wavelength)
+        if minDiff < minSkin:
+            minSkin = minDiff
+            minWavelength = wavelength
+
+    matchedWave = matchedWave[matchedWave['SkinWaves'] >= minWavelength]
+    matchedWave = matchedWave[matchedWave['SkinWaves'] <= maxWavelength]
+
+    matchedWave = matchedWave.merge(absorbCSV, how='left', left_on='AbsorbWaves', right_on='lambda nm')
+
+    matchedAbsorbs = matchedWave[spectraName].values
+    # matchedAbsorbs = matchedAbsorbs/np.max(matchedAbsorbs) # Normalize absorbance values from 0 to 1
+    data_selected = data.loc[:,'Wavelength_' + f"{minWavelength:.2f}":'Wavelength_' + f"{maxWavelength:.2f}"]
+    data_selected = data_selected.values
+    data[outputName] = np.dot(data_selected, matchedAbsorbs)
+
+    # # Normalize output
+    # data[outputName] = data[outputName] - data[outputName].min()
+    # data[outputName] = data[outputName] / data[outputName].max()
+
+    if showFig: # plot the absorbance spectra next 
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=skinWaves, y=matchedAbsorbs, name=outputName, line=dict(color='green'))) # plot HbO2
+        for i in range(data.shape[0]): # plot all of skin spectra
+            ID = str(data.iloc[i,data.columns.get_loc('ID')])
+            HbO2 = str(np.round(data.iloc[i, data.columns.get_loc(outputName)],2))
+            Foldername = str(data.iloc[i,data.columns.get_loc('Foldername')])
+            name = 'ID:' + ID + outputName + HbO2 + 'Foldername:' + Foldername
+            if Foldername == 'EdemaTrue':
+                line=dict(color='red')
+            elif Foldername == 'EdemaFalse':
+                line=dict(color='blue')
+            fig.add_trace(go.Scatter(x=skinWaves, y=data.iloc[i,data.columns.get_loc(nmStartEnd[0]):data.columns.get_loc(nmStartEnd[1])+1], name=name, line=line))
+        fig.update_layout(title='Skin Spectra with HbO2 convolution as label and HbO2 spectra')
+        fig.show()
+    return matchedAbsorbs
+
+HbO2Path = '/Users/maycaj/Documents/HSI_III/Absorbances/HbO2 Absorbance.csv'
+convolve_spectra(data, [nmStartEnd[0],nmStartEnd[-1]], 'HbO2 cm-1/M', 'HbO2', HbO2Path, showFig=False) # Find HbO2 for each pixel
+convolve_spectra(data, [nmStartEnd[0],nmStartEnd[-1]], 'Hb cm-1/M', 'Hb', HbO2Path, showFig=False) # Find Hb for each pixel
+
+
+data['Hb/HbO2'] = data['Hb'] / data['HbO2'] # Find hemoglobin oxygen saturation ratio from the ratio of oxyhemoblobin to total hemoglobin: https://onlinelibrary.wiley.com/doi/full/10.1111/srt.12074
+
+
+def plotSpectra(data, groupBy, plotID=False):
+    '''
+    Plots the average spectra by a certain group and also includes the average spectra for each ID
+    Args:
+        groupBy: the column of data to group by
+        data: input dataframe
+        plotID: plot each ID on the legend
+    '''
+    # isolate wavelengths we want to plot and group together via the groupBy variable
+    goodWavelengths = data.loc[:,nmStartEnd[0]:nmStartEnd[1]] # remove noisy wavelengths
+    data2plot = pd.concat([data[groupBy], goodWavelengths], axis=1) 
+    groupedData = data2plot.groupby(groupBy).mean()
+    groupedData.reset_index(inplace=True)
+
+    # initialize color space
+    n_groups = len(groupedData[groupBy].unique())
+    # Create a truncated Viridis colormap (removing the top 20%)
+    viridis_truncated = mcolors.LinearSegmentedColormap.from_list(
+        "viridis_truncated", plt.cm.viridis(np.linspace(0, 0.8, 256))
+    )
+    # Generate colors from the truncated colormap
+    colors = viridis_truncated(np.linspace(0, 1, n_groups))
+    # colors = plt.cm.viridis(np.linspace(0, 1, n_groups))
+    plt.figure()
+    for i, color in zip(range(groupedData.shape[0]),colors): # iterate over each example in groupedData and its corresponding color
+        # plot the mean of each category
+        y = groupedData.loc[:,nmStartEnd[0]:nmStartEnd[1]]
+        cur_category = groupedData[groupBy].iloc[i]
+        plt.plot(list(goodWavelengths.columns), y.iloc[i,:], label=cur_category, color=color)
+
+        # plot each of the ID's spectra for a certain within the categroy
+        if (groupBy != 'ID') and plotID: 
+            data2plot2 = pd.concat([data[groupBy], data['ID'], goodWavelengths], axis=1)
+            IDspectra = data2plot2.groupby(['ID',groupBy]).mean()
+            IDspectra.reset_index(inplace=True)
+            IDspectra = IDspectra[IDspectra[groupBy] == cur_category] # select this group
+            for j in range(IDspectra.shape[0]):
+                plt.plot(list(goodWavelengths.columns), IDspectra.iloc[j,:].drop(['ID',groupBy]), color=color, alpha=0.1)
+            pass
+    plt.title(f'Mean spectra grouped for each ID by {groupBy}')
+    plt.xticks(rotation=90)
+    plt.legend()
+    pass
+# plotSpectra(data, 'ID')
+# plotSpectra(data, 'Gender', True)
+# plotSpectra(data, 'patient_height', True)
+# plotSpectra(data, 'patient_skin_type', True)
+# plotSpectra(data, 'Foldername', True)
+# plt.show()
+
+
 def splitByID(data, testRange):
     '''
     splits data into training and testing by ID number
@@ -237,12 +370,14 @@ def plotPCAcomponents(pca):
     plt.ylabel('Absolute value of Weight')
 
 
+
 ## FIT MODELS AND SAVE OUTPUT
 TN, FP, FN, TP = 0, 0, 0, 0 # initialize confusion matrix tally
 uniqIDs = data['ID'].unique() # find unique IDs
 
 # Initialize a dataframe for Location of each classification
 PredLocs = pd.DataFrame([])
+coefs = pd.DataFrame([])
 
 # Initialize a dataframe for confusion matricies
 confusions = pd.DataFrame(columns=['ID','TN','FP','FN','TP'])
@@ -257,6 +392,8 @@ for selectedNum in selectedNums:
         dataFrac = data.sample(n=selectedNum,random_state=random_state) # include a fraction of the data so debugging is fast
 
         kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state) #shuffle is important to avoid bias
+
+        col_names = list(data.loc[:,nmStartEnd[0]:nmStartEnd[1]].columns) # ['Hb/HbO2', 'Hb','HbO2' ] + list(data.loc[:,nmStartEnd[0]:nmStartEnd[1]].columns) # find names of all of the columns that we will use for training.
 
         def process_fold(foldNum, train_index, test_index, i):
             trainIDs = uniqIDs[train_index]
@@ -277,17 +414,17 @@ for selectedNum in selectedNums:
             summarizeData(train)
 
             # select the X and the y from the data
-            Xtrain = train.loc[:,nmStartEnd[0]:nmStartEnd[1]] # leave out noisy wavelengths
+            Xtrain = train.loc[:,col_names] 
             # yTrain = train['Foldername']
-            yTrain = train[y_col] # binary separation – 2 and below vs 3 and above
-            Xtest = test.loc[:,nmStartEnd[0]:nmStartEnd[1]]
+            yTrain = train[y_col]
+            Xtest = test.loc[:,col_names]
             # yTest = test['Foldername']
             yTest = test[y_col]
 
-            # do PCA dimensionality reduction
-            pca = make_pipeline(PCA(n_components=n_components, random_state=random_state))
+            # # do PCA dimensionality reduction
+            # pca = make_pipeline(PCA(n_components=n_components, random_state=random_state))
 
-            pca.fit(Xtrain, yTrain) # fit method's model
+            # pca.fit(Xtrain, yTrain) # fit method's model
 
             # # inspect PCA
             # plotScree(pca, f'Scree Plot - Examples per iteration: {selectedNum}')
@@ -301,13 +438,35 @@ for selectedNum in selectedNums:
                 svc = SVC(kernel='linear')  
 
             # fit SVM on data
-            svc.fit(pca.transform(Xtrain),yTrain)
-            XtestTransformed = pca.transform(Xtest)
-
+            # svc.fit(pca.transform(Xtrain),yTrain)
+            # XtestTransformed = pca.transform(Xtest)
+            svc.fit(Xtrain,yTrain)
+            XtestTransformed = Xtest
             yPred = svc.predict(XtestTransformed)
+            coef = pd.DataFrame(svc.coef_[0].reshape(1,-1), columns=col_names)
+            print(svc.classes_)
+            pass
+
+            # ## Partial Least Squares
+            # # Binarize yTrain and yTest 
+            # yTrain = np.where(yTrain == y_categories[0], 1, 0) 
+            # yTest = np.where(yTest==y_categories[0], 1, 0)
+            # # Fit patial least squares model
+            # pls_model = PLSRegression(n_components=3) 
+            # pls_model.fit(Xtrain, yTrain) # ____ I think that this will throw an error because yTrain is not binarized 
+            # yPred = pls_model.predict(Xtest)
+            # # Evaluate the model performance
+            # r_squared = pls_model.score(Xtest, yTest)
+            # print(f'R-Squared Error: {r_squared}')
+            # mse = mean_squared_error(yTest, yPred)
+            # print(f'Mean Squared Error: {mse}')
+            # plt.scatter(yTest, yPred, alpha=0.002)
+            # plt.xlabel('Actual (0=EdemaFalse, 1=EdemaTrue)')
+            # yPred = np.array(yPred.round()) # Round the prediction such that the actual and predicted can be compared
 
             # add yTest and and yPred as columns of test
             test.loc[:,'correct'] = yTest == yPred # add a column that displays if answer is correct
+            plt.title(f'Partial Least Squares Regression: Cellulitis \n Accuracy={test["correct"].mean().round(2)*100}%')
             test.loc[:,'yPred'] = yPred
             test.loc[:,'yTest'] = yTest
 
@@ -337,7 +496,7 @@ for selectedNum in selectedNums:
             IDaccFold = IDaccFold.to_frame(name=f'Iter {i} Fold {foldNum}') # convert to DataFrame
             IDaccFold.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
 
-            return confusionFold, PredLocFold, IDaccFold
+            return confusionFold, PredLocFold, IDaccFold, coef
         
         # Run each fold in parallel
         foldOutput = Parallel(n_jobs=n_jobs)(
@@ -345,20 +504,23 @@ for selectedNum in selectedNums:
             for foldNum, (train_index, test_index) in enumerate(kf.split(uniqIDs))
         )
         # unpack then process output
-        confusionFold, PredLocFold, IDaccFold = zip(*foldOutput) 
+        confusionFold, PredLocFold, IDaccFold, coefFold = zip(*foldOutput) 
         confusionFold = pd.concat(confusionFold, ignore_index=True)
         PredLocFold = pd.concat(PredLocFold, ignore_index=True)
         IDaccFold = pd.concat(IDaccFold, ignore_index=True)
+        coefFold = pd.concat(coefFold, ignore_index=True)
 
         # add outputs to 
         confusions = pd.concat([confusions, confusionFold])
         PredLocs = pd.concat([PredLocs, PredLocFold])
-
+        coefFold.columns = [col.split('_')[1] for col in coefFold.columns] # Change all of the columns to be just numbers
+        coefs = pd.concat([coefs,coefFold])
         if i == 0:
             IDaccs = IDaccFold
         else: 
             IDaccs = IDaccs.merge(IDaccFold, on=['ID',y_col], how='left')
         pass
+
 
 ## PROCESS OUTPUT DATA
 def roundCells(cell, thresh):
@@ -500,6 +662,7 @@ else: # on local computer
     PredLocs.to_csv(f'/Users/maycaj/Downloads/{date}PredLocs_n={selectedNum}i={iterations}.csv.gz', compression='gzip', index=False) # Save predictions with locations as csv
     confusion.to_csv(f'/Users/maycaj/Downloads/{date}confusion_n={selectedNum}i={iterations}.csv')
     confusions.to_csv(f'/Users/maycaj/Downloads/{date}confusions_n={selectedNum}i={iterations}.csv')
+    coefs.to_csv(f'/Users/maycaj/Downloads/{date}coefs_n={selectedNum}i={iterations}.csv', index=False)
     wholeLeg.savefig(f'/Users/maycaj/Downloads/{date}wholeLeg_n={selectedNum}i={iterations}.pdf')
     patch.savefig(f'/Users/maycaj/Downloads/{date}patch_n={selectedNum}i={iterations}.pdf')
 print('All done ;)')
