@@ -1,38 +1,31 @@
 #!/Users/maycaj/Documents/HSI_III/.venv/bin/python3
 
 import numpy as np
-from sklearn.decomposition import PCA
-from sklearn.model_selection import train_test_split
-from sklearn.neighbors import KNeighborsClassifier, NeighborhoodComponentsAnalysis
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import confusion_matrix
 from sklearn.svm import SVC
 import matplotlib.pyplot as plt
 import pandas as pd
-from matplotlib.animation import FuncAnimation
 from sklearn.model_selection import KFold
-from sklearn.svm import LinearSVC
 from sklearn.linear_model import SGDClassifier
 import time
 from joblib import Parallel, delayed
-import matplotlib.colors as mcolors
-import plotly.graph_objects as go
+from HSI_Functions import convolve_spectra
 
 
 ## INITIALIZE PARAMETERS
-filepath = '/Users/maycaj/Documents/HSI_III/PatchCSVs/Feb4_1x1_ContinuumRemoved_WLFiltered.csv' #'/Users/maycaj/Documents/HSI_III/Mar4_1x1_ContinuumRemoved_WLFiltered_Recrop_Gender.csv' #'/Users/maycaj/Documents/HSI_III/Mar4_1x1_ContinuumRemoved_WLFiltered_Recrop_Gender.csv' # '/Users/maycaj/Documents/HSI_III/Mar10_Noarm.csv' # '/Users/maycaj/Documents/HSI_III/Feb21_1x1_ContinuumRemoved_WLFiltered_Recrop_PAREINC.csv' #'/Users/maycaj/Documents/HSI_III/1-22-25_5x5.csv'
-fracs = [0.001] # fraction of patches to include
-iterations = 2 # how many times to repeat the analysis
+filepath = '/Users/maycaj/Documents/HSI_III/PatchCSVs/Mar25_NoCR_PostDeoxyCrop.csv' #'/Users/maycaj/Documents/HSI_III/PatchCSVs/Feb4_1x1_ContinuumRemoved_WLFiltered.csv' #'/Users/maycaj/Documents/HSI_III/Apr_8_CR_FullRound1and2.csv'  
+fracs = [0.01] # fraction of patches to include
+# filepath = '/Users/maycaj/Documents/HSI_III/PatchCSVs/DebugData.csv' # for fast debugging
+# fracs = [1]
+iterations = 3 # how many times to repeat the analysis
 threshold = 0.5 # what fraction of patches of edemaTrue to consider whole leg edemaTrue
-nmStartEnd = ['Wavelength_451.18','Wavelength_954.83'] # ['Wavelength_760.61','Wavelength_760.61']# ['Wavelength_451.18','Wavelength_954.83'] # specify the wavelengths to include in analysis (1x1 continuum)
-# nmStartEnd = ['451.18','954.83'] 
-n_jobs = 1 # Number of CPUs to use during each Fold. -1 = as many as possible
-n_splits = 10 # number of splits to make the fold
-n_components = 40 # Number of PCA components
+nmStart = 'Wavelength_451.18'
+nmEnd = 'Wavelength_954.83'
+n_jobs = -1 # Number of CPUs to use during each Fold. -1 = as many as possible
 stochastic = False
-y_col = 'Foldername' # 'patient_height' #'patient_skin_type' # 'Gender'
+y_col = 'Foldername' 
 
+# Load DataFrame
 start_time = time.time()
 print('Loading dataframe...')
 data = pd.read_csv(filepath)
@@ -40,7 +33,28 @@ print(f'Done loading dataframe ({np.round(time.time()-start_time,1)}s)')
 y_categories = data[y_col].unique() # ['Male','Female'] # [0,1] is [short, tall] and [pale, dark]
 
 ## PROCESS DATA FOR CERTAIN y
-data = data[(data['ID'].isin([11,12,15,18,20,22,23,26,34,36])) | (data['Foldername'] =='EdemaFalse') ] # Select only cellulitis IDs or IDs in EdemaFalse Folder
+data = data[(data['ID'].isin([11,12,15,18,20,22,23,26,34,36])) | (data['Foldername'] =='EdemaFalse')] # Round 1: Select only cellulitis IDs or IDs in EdemaFalse Folder
+# data = data[(data['ID'].isin([1,2,5,6,7,8,9,10,13,14,19,21,24,27,29,30,31,32,33,35,37,38,39,40]) | (data['Foldername'] =='EdemaFalse'))] # Round 1: Select Peripheral IDs or IDs in EdemaFalse folder
+# data = data[(data['ID'].isin([11,12,15,18,20,22,23,26,34,36,45,59,61,70])) | (data['Foldername'] =='EdemaFalse')] # Round 2: Select only cellulitis IDs or IDs in EdemaFalse Folder
+data = data[data['ID'] != 0] # Remove Dr. Pare
+
+n_splits = len(data['ID'].unique()) # number of splits to make the fold
+col_names = list(data.loc[:,nmStart:nmEnd].columns)
+
+# Convolve the skin spectra with the chemophore spectras
+HbO2Path = '/Users/maycaj/Documents/HSI_III/Absorbances/HbO2 Absorbance.csv'
+convolve_spectra(data, [nmStart,nmEnd], 'HbO2 cm-1/M', 'HbO2', HbO2Path) # Find HbO2 for each pixel
+convolve_spectra(data, [nmStart,nmEnd], 'Hb cm-1/M', 'Hb', HbO2Path) # Find Hb for each pixel
+WaterPath = '/Users/maycaj/Documents/HSI_III/Absorbances/Water Absorbance.csv'
+convolve_spectra(data, [nmStart,nmEnd], 'H2O 1/cm','H2O', WaterPath)
+pheoPath = '/Users/maycaj/Documents/HSI_III/Absorbances/Pheomelanin.csv'
+convolve_spectra(data, [nmStart,nmEnd], 'Pheomelanin cm-1/M','Pheomelanin', pheoPath)
+euPath = '/Users/maycaj/Documents/HSI_III/Absorbances/Eumelanin Absorbance.csv'
+convolve_spectra(data, [nmStart,nmEnd], 'Eumelanin cm-1/M','Eumelanin', euPath)
+fatPath = '/Users/maycaj/Documents/HSI_III/Absorbances/Fat Absorbance.csv'
+convolve_spectra(data, [nmStart,nmEnd], 'fat', 'fat', fatPath) # Find Hb for each pixel
+data['HbO2/Hb'] = data['HbO2'] / data['Hb']
+col_names = col_names + ['HbO2/Hb'] # add additional column names that we will train on
 
 
 def undersampleClass(data, classes, columnLabel):
@@ -100,7 +114,10 @@ def process_fold(foldNum, train_index, test_index, i):
     train = undersampleClass(train, y_categories, y_col)
 
     # print sum of weights and sum of examples
+    print(f'\n Summarizing Training Data:')
     summarizeData(train)
+    # print(f'\n Summarize Test Data')
+    # summarizeData(test)
 
     # select the X and the y from the data
     Xtrain = train.loc[:,col_names] 
@@ -112,15 +129,13 @@ def process_fold(foldNum, train_index, test_index, i):
     if stochastic:
         svc = SGDClassifier(loss='hinge', random_state=random_state) # stocastic
     else:
-        svc = SVC(kernel='linear')  
+        svc = SVC(kernel='linear')
 
     # fit SVM on data
     svc.fit(Xtrain,yTrain)
     XtestTransformed = Xtest
     yPred = svc.predict(XtestTransformed)
     coefFold = pd.DataFrame(svc.coef_[0].reshape(1,-1), columns=col_names)
-    print(svc.classes_) # first class corresponds to first 
-    pass
 
     # add yTest and and yPred as columns of test
     test.loc[:,'correct'] = yTest == yPred # add a column that displays if answer is correct
@@ -136,9 +151,8 @@ def process_fold(foldNum, train_index, test_index, i):
         if not testID.empty: # double check if this ID is present in testing
             cm = confusion_matrix(testID['yTest'],testID['yPred'], labels=y_categories)
             if cm.size != 1: # check to make sure the testing set doesn't only have one foldername
-                TN, FP, FN, TP = cm.ravel()
+                TP, FN, FP, TN = cm.ravel()
                 confusionFold = pd.concat([confusionFold, pd.DataFrame([[foldNum, ID, TN, FP, FN, TP]], columns=['foldNum','ID','TN','FP','FN','TP'])])
-            pass
 
     # Create dataframe with ID, foldername, prediction, and coordinates for this fold
     PredLocFold = test[['X','Y','ID','yPred','FloatName','correct',y_col]].copy()
@@ -172,7 +186,6 @@ for selectedNum in selectedNums:
         random_state = np.random.randint(0,4294967295) # generate random integer for random state
         dataFrac = data.sample(n=selectedNum,random_state=random_state) # include a fraction of the data 
         kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state) #shuffle is important to avoid bias
-        col_names = list(data.loc[:,nmStartEnd[0]:nmStartEnd[1]].columns) # ['Hb/HbO2', 'Hb','HbO2' ] + list(data.loc[:,nmStartEnd[0]:nmStartEnd[1]].columns) # find names of all of the columns that we will use for training.
         
         # Run each fold in parallel
         foldOutput = Parallel(n_jobs=n_jobs)(
@@ -189,14 +202,14 @@ for selectedNum in selectedNums:
         # add outputs to a dataframe for all of the predictions combined
         confusions = pd.concat([confusions, confusionFold])
         PredLocs = pd.concat([PredLocs, PredLocFold])
-        coefFold.columns = [col.split('_')[1] for col in coefFold.columns] # Change all of the columns to be just numbers
+        # coefFold.columns = [col.split('_')[1] for col in coefFold.columns] # Change all of the columns to be just numbers
         coefs = pd.concat([coefs,coefFold])
         if i == 0:
             IDaccs = IDaccFold
         else: 
             IDaccs = IDaccs.merge(IDaccFold, on=['ID',y_col], how='left')
         pass
-
+print('Done with Training')
 
 ## PROCESS OUTPUT DATA
 def roundCells(cell, thresh):
@@ -311,10 +324,18 @@ def columnBarPlot(df, hasValues, labelsKey, valuesKey, errorKey, xlabel, ylabel,
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.title(title + ' overall average=' + str(round(values['Column Average']*100,1))) 
+    plt.tight_layout()
     return fig
 
-wholeLeg = columnBarPlot(IDaccs, IDaccs['ID 0.5 Rounded Avg'].notna(),'Labels','ID 0.5 Rounded Avg','YerrRounded',f'ID \n {y_col}','Accuracy',f'{y_col} Leg Acc n={selectedNum} iterations={iterations}')
-patch = columnBarPlot(IDaccs, IDaccs['ID Avg'].notna(),'Labels','ID Avg','Yerr',f'ID \n {y_col}','Accuracy',f'{y_col} Patch Acc n={selectedNum} iterations={iterations}')
+# wholeLeg = columnBarPlot(IDaccs, IDaccs['ID 0.5 Rounded Avg'].notna(),'Labels','ID 0.5 Rounded Avg','YerrRounded',f'ID \n {y_col}','Accuracy',f'{y_col} Leg Acc n={selectedNum} iterations={iterations}')
+patch = columnBarPlot(IDaccs, IDaccs['ID Avg'].notna(),'Labels','ID Avg','Yerr',f'ID \n {y_col}','Accuracy',f'{y_col} Patch Acc n={selectedNum} iterations={iterations} fracs={fracs} \n {filepath.split("/")[-1]}')
+
+## Plot the SVM coefficients
+plt.figure() 
+plt.plot(abs(coefs).median(axis=0))
+plt.xticks(rotation=90)
+plt.title(f'Testing out HbO2 and Hb as features with {filepath.split("/")[-1]} \n iterations: {iterations} n={selectedNum} fracs={fracs}')
+plt.tight_layout()
 plt.show()
 
 # Find the confusion matricies for each ID
@@ -331,6 +352,6 @@ PredLocs.to_csv(f'/Users/maycaj/Downloads/{date}PredLocs_n={selectedNum}i={itera
 confusion.to_csv(f'/Users/maycaj/Downloads/{date}confusion_n={selectedNum}i={iterations}.csv')
 confusions.to_csv(f'/Users/maycaj/Downloads/{date}confusions_n={selectedNum}i={iterations}.csv')
 coefs.to_csv(f'/Users/maycaj/Downloads/{date}coefs_n={selectedNum}i={iterations}.csv', index=False)
-wholeLeg.savefig(f'/Users/maycaj/Downloads/{date}wholeLeg_n={selectedNum}i={iterations}.pdf')
+# wholeLeg.savefig(f'/Users/maycaj/Downloads/{date}wholeLeg_n={selectedNum}i={iterations}.pdf')
 patch.savefig(f'/Users/maycaj/Downloads/{date}patch_n={selectedNum}i={iterations}.pdf')
 print('All done ;)')
