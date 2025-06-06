@@ -8,76 +8,74 @@ from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 import pandas as pd
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, GridSearchCV
 import time
 from joblib import Parallel, delayed
 import pyarrow.csv as pv
-from Scripts.ChromDotSpectra import chrom_dot_spectra
+from ChromDotSpectra import chrom_dot_spectra
 from datetime import datetime
 import sys
 import os
 from pathlib import Path
 import shutil
-from sklearn.model_selection import GridSearchCV
-# from LeastSquares import getLeastSquares
 
-class training:
+class DataLoader:
     @staticmethod
-    def loadDF(filepath):
+    def load_dataframe(filepath):
         '''
         Args: 
             filepath (str): path to df
         Returns:
             df (DataFrame)
         '''
-        ## Load DataFrame
         print('Loading dataframe...')
+        start_time = time.time()
         table = pv.read_csv(filepath)
         df = table.to_pandas()
         print(f'Done loading dataframe ({np.round(time.time()-start_time,1)}s)')
         return df 
 
+class DataProcessor:
     @staticmethod
-    def undersampleClass(df, classes, columnLabel):
+    def undersample_class(df, classes, column_label, random_state):
         '''
         Evens out class imbalances via undersampling
         Args:
             df: pandas dataframe 
             classes: string of binary classes to undersample ['class1','class2']
-            columnLabel: string label of the column where undersampling occurs
+            column_label: string label of the column where undersampling occurs
         Returns:
             undersampled data dataframe
         '''
-        dfTrue = df[df[columnLabel] == classes[0]]
-        dfFalse = df[df[columnLabel] == classes[1]]
-        minLen = int(min(dfTrue.shape[0],dfFalse.shape[0])) # find maximum number for each class
-        trueSample = dfTrue.sample(n=minLen, random_state=random_state)
-        falseSample = dfFalse.sample(n=minLen, random_state=random_state)
-        underSampled = pd.concat([trueSample,falseSample], axis=0)
-        return underSampled
+        df_true = df[df[column_label] == classes[0]]
+        df_false = df[df[column_label] == classes[1]]
+        min_len = int(min(df_true.shape[0], df_false.shape[0]))
+        true_sample = df_true.sample(n=min_len, random_state=random_state)
+        false_sample = df_false.sample(n=min_len, random_state=random_state)
+        return pd.concat([true_sample, false_sample], axis=0)
 
     @staticmethod
-    def summarizeData(df):
+    def summarize_data(df, uniq_ids, y_col, y_categories):
         '''
-        prints out the sums of the weights and the sums of the samples by Id and by T/F
-        args: 
+        Prints out the sums of the weights and the sums of the samples by Id and by T/F
+        Args: 
             df: dataframe 
         '''
-        # print out numbers of samples
-        for ID in uniqIDs:
-            IDsum = sum(df['ID'] == ID)
-            print(f'{ID} total: {IDsum}')
-        trueSum = sum(df[y_col]==y_categories[1])
-        falseSum = sum(df[y_col]==y_categories[0])
-        print(f'{y_categories[0]} total: {falseSum} | {y_categories[1]} total: {trueSum}')
+        for ID in uniq_ids:
+            ID_sum = sum(df['ID'] == ID)
+            print(f'{ID} total: {ID_sum}')
+        true_sum = sum(df[y_col] == y_categories[1])
+        false_sum = sum(df[y_col] == y_categories[0])
+        print(f'{y_categories[0]} total: {false_sum} | {y_categories[1]} total: {true_sum}')
 
+class ModelTrainer:
     @staticmethod
-    def optimize_hyperparameters(Xtrain, yTrain):
+    def optimize_hyperparameters(X_train, y_train):
         '''
         Optimizes hyperparameters for the SVM classifier using GridSearchCV.
         Args:
-            Xtrain: Training features
-            yTrain: Training labels
+            X_train: Training features
+            y_train: Training labels
         Returns:
             best_params: Best hyperparameters found
         '''
@@ -87,377 +85,332 @@ class training:
             'gamma': ['scale', 'auto']
         }
         grid_search = GridSearchCV(SVC(), param_grid, cv=3, scoring='accuracy', n_jobs=-1)
-        grid_search.fit(Xtrain, yTrain)
+        grid_search.fit(X_train, y_train)
         print(f"Best parameters: {grid_search.best_params_}")
         return grid_search.best_params_
 
     @staticmethod
-    def process_fold(foldNum, train_index, test_index, i):
+    def process_fold(fold_num, train_index, test_index, i, uniq_ids, data_frac, y_categories, y_col, col_names, scale, optimize, random_state):
         '''
         Processes each fold of the data. Is wrapped into a function so that each fold can be parallelized
-        inputs:
-            foldNum: what number fold we are on
+        Args:
+            fold_num: what number fold we are on
             train_index: index of the training examples
             test_index: index of the testing index
             i: what number iteration we are on
-
-        outputs: 
+        
+        Returns: 
             confusionFold: confusion matricies for this fold
             PredLocFold: predictions and their locations for this fold
             IDaccFold: ID accuracies for this fold
             coefFold: SVM coefficients for this fold
         '''
+        train_ids = uniq_ids[train_index]
+        test_ids = uniq_ids[test_index]
+        print(f'Fold {fold_num} Train IDs: {train_ids}')
+        print(f'Fold {fold_num} Test IDs: {test_ids}')
+        train = data_frac[data_frac['ID'].isin(train_ids)]
+        test = data_frac[data_frac['ID'].isin(test_ids)].copy()
+        train = DataProcessor.undersample_class(train, y_categories, y_col, random_state)
 
-        trainIDs = uniqIDs[train_index]
-        testIDs = uniqIDs[test_index]
-        print(f'Fold {foldNum} Train IDs: {trainIDs}')
-        print(f'Fold {foldNum} Test IDs: {testIDs}')
-        train = dataFrac[dataFrac['ID'].isin(trainIDs)]
-        test = dataFrac[dataFrac['ID'].isin(testIDs)].copy()
-        train = training.undersampleClass(train, y_categories, y_col) # Why is undersampling occuring on only edemaFalse?
+        DataProcessor.summarize_data(train, uniq_ids, y_col, y_categories)
 
-        # print sum of weights and sum of examples
-        print(f'\n Summarizing Training Data:')
-        training.summarizeData(train)
-        # print(f'\n Summarize Test Data')
-        # summarizeData(test)
-
-        # select the X and the y from the data
-        Xtrain = train.loc[:,col_names] 
-        yTrain = train[y_col]
-        Xtest = test.loc[:,col_names]
-        yTest = test[y_col]
+        X_train = train.loc[:, col_names] 
+        y_train = train[y_col]
+        X_test = test.loc[:, col_names]
+        y_test = test[y_col]
 
         if optimize: 
-            svc_params = training.optimize_hyperparameters(Xtrain, yTrain)
-            svc = SVC(**svc_params)  # Use optimized hyperparameters
+            svc_params = ModelTrainer.optimize_hyperparameters(X_train, y_train)
+            svc = SVC(**svc_params)
         else:
             svc = SVC(kernel='linear')
 
-        # fit SVM on data
         if scale:
             scaler = StandardScaler()
-            Xtrain = scaler.fit_transform(Xtrain)
-        svc.fit(Xtrain,yTrain)
+            X_train = scaler.fit_transform(X_train)
+        svc.fit(X_train, y_train)
         if scale:
-            Xtest = scaler.transform(Xtest) # Scale test data using the same scaler
-        yPred = svc.predict(Xtest)
+            X_test = scaler.transform(X_test)
+        y_pred = svc.predict(X_test)
 
-        # svc.fit(Xtrain, yTrain)
-        # yPred = svc.predict(Xtest)
+        if optimize:
+            if svc_params['kernel'] == 'linear':
+                coef_fold = pd.DataFrame(svc.coef_[0].reshape(1, -1), columns=col_names)
+            elif svc_params['kernel'] == 'rbf':
+                coef_fold = pd.DataFrame(np.zeros((1, len(col_names))), columns=col_names)
+        else:
+            coef_fold = pd.DataFrame(svc.coef_[0].reshape(1, -1), columns=col_names)
 
-        if svc_params['kernel'] == 'linear':
-            coefFold = pd.DataFrame(svc.coef_[0].reshape(1,-1), columns=col_names)
-        elif svc_params['kernel'] == 'rbf': # SVM coefficients only work for linear SVMs, so instead I pass in an empty array
-            coefFold = pd.DataFrame(np.zeros((1,len(col_names))), columns=col_names)
+        test.loc[:, 'correct'] = y_test == y_pred
+        test.loc[:, 'yPred'] = y_pred
+        test.loc[:, 'yTest'] = y_test
 
-        # add yTest and and yPred as columns of test
-        test.loc[:,'correct'] = yTest == yPred # add a column that displays if answer is correct
-        test.loc[:,'yPred'] = yPred
-        test.loc[:,'yTest'] = yTest
-
-        # Place confusion matrix info for this iteration into confusion - place all iterations in confusions
-        confusionFold = pd.DataFrame([]) # find confusion matricies for this fold
-        uniqTestIDs = test['ID'].unique()
-        for ID in uniqTestIDs:
-            # find data for this id and this foldername
-            testID = test[(test['ID']==ID)] 
-            if not testID.empty: # double check if this ID is present in testing
-                cm = confusion_matrix(testID['yTest'],testID['yPred'], labels=y_categories)
-                if cm.size != 1: # check to make sure the testing set doesn't only have one foldername
+        confusion_fold = pd.DataFrame([])
+        uniq_test_ids = test['ID'].unique()
+        for ID in uniq_test_ids:
+            test_id = test[(test['ID'] == ID)] 
+            if not test_id.empty:
+                cm = confusion_matrix(test_id['yTest'], test_id['yPred'], labels=y_categories)
+                if cm.size != 1:
                     TP, FN, FP, TN = cm.ravel()
-                    confusionFold = pd.concat([confusionFold, pd.DataFrame([[foldNum, ID, TN, FP, FN, TP]], columns=['foldNum','ID','TN','FP','FN','TP'])])
+                    confusion_fold = pd.concat([confusion_fold, pd.DataFrame([[fold_num, ID, TN, FP, FN, TP]], columns=['foldNum', 'ID', 'TN', 'FP', 'FN', 'TP'])])
 
-        # Create dataframe with ID, foldername, prediction, and coordinates for this fold
-        PredLocFold = test[['ID','yPred','FloatName','correct',y_col]].copy()
-        PredLocFold['foldNum'] = foldNum
+        pred_loc_fold = test[['ID', 'yPred', 'FloatName', 'correct', y_col]].copy()
+        pred_loc_fold['foldNum'] = fold_num
 
-        print(f'Patch Acc Fold {foldNum} iteration {i}: {np.mean(test["correct"])}')
+        print(f'Patch Acc Fold {fold_num} iteration {i}: {np.mean(test["correct"])}')
 
-        # Find accuracies on this fold
-        IDaccFold = test.groupby(['ID',y_col])['correct'].mean() # find average accuracy per ID
-        IDaccFold = IDaccFold.to_frame(name=f'Iter {i} Fold {foldNum}') # convert to DataFrame
-        IDaccFold.reset_index(inplace=True) # make 'ID' and 'Foldername' into separate columns
+        ID_acc_fold = test.groupby(['ID', y_col])['correct'].mean()
+        ID_acc_fold = ID_acc_fold.to_frame(name=f'Iter {i} Fold {fold_num}')
+        ID_acc_fold.reset_index(inplace=True)
 
-        return confusionFold, PredLocFold, IDaccFold, coefFold
+        return confusion_fold, pred_loc_fold, ID_acc_fold, coef_fold
 
-class postprocessing:
-    ## PROCESS OUTPUT DATA
+class PostProcessor:
     @staticmethod
-    def roundCells(cell, thresh):
+    def round_cells(cell, thresh):
         '''
-        rounds cells to desired threshold
-        args:
+        Rounds cells to desired threshold
+        Args:
             cell: cell of a dataframe
             thresh: threshold decimal
-        returns:
+        Returns:
             output: rounded cells
         '''
-        output =  np.where(np.isnan(cell), np.nan, np.where(cell > thresh, 1, 0)) # np.round() is used later on so it must be < not <=
-        return output
+        return np.where(np.isnan(cell), np.nan, np.where(cell > thresh, 1, 0))
 
     @staticmethod
-    def bootstrapSeries(series, round=False):
+    def bootstrap_series(series, round=False):
         '''
         Bootstraps to make 95% CI across a pandas dataframe row
         Args:
-            row: dataframe row
+            series: dataframe row
         Returns:
-            lower: lower end of CI
-            upper: higher end of CI
+            lower, upper: Confidence interval bounds
         '''
         confidence = 0.95
         bootstrapped_means = []
-        series = series[series.notna()].values # remove nan values
+        series = series[series.notna()].values
         if round:
             series = np.round(series)
-        for _ in range(100): #___ set to 1000 for deployment
+        for _ in range(1000):
             sample = np.random.choice(series, size=len(series), replace=True)
             bootstrapped_means.append(np.mean(sample))
         lower = np.percentile(bootstrapped_means, (1-confidence)*100/2)
         upper = np.percentile(bootstrapped_means, (1+confidence)*100/2)
-        upperLower = np.array([np.round(float(lower),2), np.round(float(upper),2)])
-        return upperLower
+        return np.array([np.round(float(lower), 2), np.round(float(upper), 2)])
 
     @staticmethod
-    def halfDifference(input):
+    def half_difference(input):
         '''
-        construct yerror 
-        input: [lowerCI, upperCI]
-        output: half of difference between lower CI and upper CI
+        Construct yerror 
+        Args:
+            input: [lowerCI, upperCI]
+        Returns:
+            half of difference between lower CI and upper CI
         '''
-        return np.abs(input[0]-input[1])/2
+        return np.abs(input[0] - input[1]) / 2
 
     @staticmethod
-    def columnBarPlot(df, hasValues, labelsKey, valuesKey, errorKey, xlabel, ylabel, title):
+    def column_bar_plot(df, has_values, labels_key, values_key, error_key, xlabel, ylabel, title):
         '''
-        plots down a column
-        creates bar chart with error bars
-        args:
+        Plots down a column, creates bar chart with error bars
+        Args:
             df: dataFrame
-            hasValues: Key for Dataframe column. The column's rows with values will be used in this analysis
-            labelsKey: Key for labels column in Dataframe
-            valuesKey: Key for values column in Dataframe
+            has_values: Key for Dataframe column. The column's rows with values will be used in this analysis
+            labels_key: Key for labels column in Dataframe
+            values_key: Key for values column in Dataframe
             xlabel, ylabel, title: for plot
         '''
-        labels = df[hasValues][labelsKey] # labels for bar chart
-        labels.loc['Column Average'] = 'Column Average' # add label for column average
+        labels = df[has_values][labels_key]
+        labels.loc['Column Average'] = 'Column Average'
         labels = labels.astype(str)
-        values = df[hasValues][valuesKey] # y values for bar chart
-        yerrPlot = df[hasValues][errorKey]
-        yerrPlot = np.vstack(yerrPlot).T # errors for bar chart
-        # plot bar chart
+        values = df[has_values][values_key]
+        yerr_plot = df[has_values][error_key]
+        yerr_plot = np.vstack(yerr_plot).T
         fig, ax = plt.subplots()
-        bars = ax.bar(labels, values, yerr=yerrPlot)
+        bars = ax.bar(labels, values, yerr=yerr_plot)
         ax.tick_params(axis='x', labelsize=5, rotation=90)
         plt.xlabel(xlabel)
         plt.ylabel(ylabel)
-        acc = str(round(values['Column Average']*100,1))
+        acc = str(round(values['Column Average']*100, 1))
         plt.title(title + ' Average=' + acc)
         plt.tight_layout()
         return fig, acc
 
-if __name__ == '__main__':
-    ## INITIALIZE PARAMETERS
-    ## fracs: fraction to keep in the analysis
-    # fracs, filepath = [0.0001], '/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv' #'/Users/maycaj/Documents/HSI_III/PatchCSVs/Mar25_NoCR_PostDeoxyCrop.csv' # '/Users/maycaj/Documents/HSI_III/PatchCSVs/Mar21_CR_PostDeoxyCrop.csv'
-    fracs, filepath = [1], '/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv' #' # for fast debugging
-    iterations = 3 # how many times to repeat the analysis
-    n_jobs = 1 # Number of CPUs to use during each Fold. -1 = as many as possible
-    y_col = 'Foldername' 
-    scale = True # use StandardScaler()?
-    optimize = False # Optimize hyperparameters?
-    nmStart = 411.27 # 451.18 #376.61 # 603.66
-    nmEnd = 1004.39 #1043.21 #1004.39 #603.66 #954.83
-    start_time = time.time()
-    df = training.loadDF(filepath)
+class SpectrumClassifier:
+    def __init__(self, filepath, fracs, iterations, n_jobs, y_col, scale, optimize, nm_start, nm_end, data_config):
+        self.filepath = filepath
+        self.fracs = fracs
+        self.iterations = iterations
+        self.n_jobs = n_jobs
+        self.y_col = y_col
+        self.scale = scale
+        self.optimize = optimize
+        self.nm_start = nm_start
+        self.nm_end = nm_end
+        self.data_config = data_config
+        self.start_time = time.time()
+        self.df = DataLoader.load_dataframe(filepath)
 
-    ## PROCESS DATA IDs
-    print('Selecting IDs')
-    dataConfig = 'Round 1 & 2: peripheral or edemafalse'
-    # Store data configurations in a {'Label': (IDs...)} format
-    dataConfigs = {'Round 1: cellulitis or edemafalse': (11,12,15,18,20,22,23,26,34,36), 
-                'Round 1: peripheral or edemafalse': (1,2,5,6,7,8,9,10,13,14,19,21,24,27,29,30,31,32,33,35,37,38,39,40),
-                'Round 1 & 2: cellulitis or edemafalse': (11,12,15,18,20,22,23,26,34,36,45,59,61,70),
-                'Round 1 & 2: peripheral or edemafalse': (1,2,5,6,7,8,9,10,13,14,19,21,24,27,29,30,31,32,33,35,37,38,39,40,41,42,43,46,47,48,49,51,53,54,55,56,57,58,60,62,63,64,65,66,67,68,69,71,72)}
-    df = df[(df['ID'].isin(dataConfigs[dataConfig]) | (df['Foldername'] == 'EdemaFalse'))]
+    def process_data(self):
+        '''
+        Processes the data, applies configurations, and prepares for training
+        '''
+        print('Selecting IDs')
+        data_config = self.data_config
+        data_configs = {
+            'Round 1: cellulitis or edemafalse': (11, 12, 15, 18, 20, 22, 23, 26, 34, 36), 
+            'Round 1: peripheral or edemafalse': (1, 2, 5, 6, 7, 8, 9, 10, 13, 14, 19, 21, 24, 27, 29, 30, 31, 32, 33, 35, 37, 38, 39, 40),
+            'Round 1 & 2: cellulitis or edemafalse': (11, 12, 15, 18, 20, 22, 23, 26, 34, 36, 45, 59, 61, 70),
+            'Round 1 & 2: peripheral or edemafalse': (1, 2, 5, 6, 7, 8, 9, 10, 13, 14, 19, 21, 24, 27, 29, 30, 31, 32, 33, 35, 37, 38, 39, 40, 41, 42, 43, 46, 47, 48, 49, 51, 53, 54, 55, 56, 57, 58, 60, 62, 63, 64, 65, 66, 67, 68, 69, 71, 72)
+        }
+        self.df = self.df[(self.df['ID'].isin(data_configs[data_config]) | (self.df['Foldername'] == 'EdemaFalse'))] # Keep all of EdemaFalse Data
+        self.df = self.df[self.df['ID'] != 0] # Remove Dr. Pare
+        self.n_splits = len(self.df['ID'].unique())
+        self.col_names = [col for col in self.df.columns if col.startswith('Wavelength_')]
+        self.col_names = [col for col in self.col_names if (float(col.split('_')[1]) >= self.nm_start) & (float(col.split('_')[1]) <= self.nm_end)]
+        self.y_categories = self.df[self.y_col].unique()
+        print('Performing dot product')
+        nm_start_end_str = ['Wavelength_' + str(self.nm_start), 'Wavelength_' + str(self.nm_end)]
+        dot_data = {
+            'HbO2': ('HbO2 cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv'),
+            'Hb': ('Hb cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv'),
+            'H2O': ('H2O 1/cm', '/Users/maycaj/Documents/HSI_III/Absorbances/Water Absorbance.csv'),
+            'Pheomelanin': ('Pheomelanin cm-1/M', '/Users/maycaj/Documents/HSI_III/Absorbances/Pheomelanin.csv'),
+            'Eumelanin': ('Eumelanin cm-1/M', '/Users/maycaj/Documents/HSI_III/Absorbances/Eumelanin Absorbance.csv'),
+            'fat': ('fat', '/Users/maycaj/Documents/HSI_III/Absorbances/Fat Absorbance.csv'),
+            'L': ('L', '/Users/maycaj/Documents/HSI/Absorbances/LM Absorbance.csv'),
+            'M': ('M', '/Users/maycaj/Documents/HSI/Absorbances/LM Absorbance.csv'),
+            'S': ('S', '/Users/maycaj/Documents/HSI/Absorbances/S Absorbance.csv')
+        }
+        chrom_keys = None
+        if chrom_keys is not None:
+            for key in chrom_keys:
+                chrom_dot_spectra(self.df, nm_start_end_str, dot_data[key][0], key, dot_data[key][1], normalized=True, plot=True)
+        self.TN, self.FP, self.FN, self.TP = 0, 0, 0, 0
+        self.uniq_ids = np.sort(self.df['ID'].unique())
 
-    df = df[df['ID'] != 0] # Remove Dr. Pare
-    n_splits = len(df['ID'].unique()) # number of splits to make the fold
-    col_names = [col for col in df.columns if ((col.startswith('Wavelength_')))]
-    col_names = [col for col in col_names if (float(col.split('_')[1]) >= nmStart) & (float(col.split('_')[1]) <= nmEnd) ]
-    y_categories = df[y_col].unique() # ['Male','Female'] # [0,1] is [short, tall] and [pale, dark]
+        # Initialize dataframes for data processing
+        self.PredLocs = pd.DataFrame([])
+        self.coefs = pd.DataFrame([])
+        self.confusions = pd.DataFrame(columns=['ID', 'TN', 'FP', 'FN', 'TP'])
+        self.selected_num = int(self.fracs * self.df.shape[0])
 
-    ## Apply linear least squares to add new chromophore features
-    # start_ls = time.time()
-    # print('Starting least squares...')
-    # df = df.sample(frac=0.1) # select a sample such that getLeastSquares runs in a reasonable amount of time
-    # df, _ = getLeastSquares(df, False, False)
-    # print(f'Done with least squares: {np.round(time.time()-start_ls,1)}s')
-    # col_names = [col for col in df.columns if col.startswith('yInterp')]
-
-    ## Convolve the skin spectra with the chemophore spectras
-    print('Performing dot product')
-    nmStartEnd_str = ['Wavelength_'+str(nmStart),'Wavelength_'+str(nmEnd)]
-    # Data for convolution of form {Output_Column_Name: (chromophore_csv_column_name, chromophore_csv_path), ...}
-    dotData = {'HbO2': ('HbO2 cm-1/M','/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv'),
-                    'Hb': ('Hb cm-1/M','/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv'),
-                    'H2O': ('H2O 1/cm','/Users/maycaj/Documents/HSI_III/Absorbances/Water Absorbance.csv'),
-                    'Pheomelanin': ('Pheomelanin cm-1/M','/Users/maycaj/Documents/HSI_III/Absorbances/Pheomelanin.csv'),
-                    'Eumelanin': ('Eumelanin cm-1/M','/Users/maycaj/Documents/HSI_III/Absorbances/Eumelanin Absorbance.csv'),
-                    'fat':('fat','/Users/maycaj/Documents/HSI_III/Absorbances/Fat Absorbance.csv'),
-                    'L':('L','/Users/maycaj/Documents/HSI/Absorbances/LM Absorbance.csv'),
-                    'M':('M','/Users/maycaj/Documents/HSI/Absorbances/LM Absorbance.csv'),
-                    'S':('S','/Users/maycaj/Documents/HSI/Absorbances/S Absorbance.csv')}
-    chromKeys = None
-    if chromKeys is not None:
-        for key in chromKeys:
-            chrom_dot_spectra(df, nmStartEnd_str, dotData[key][0], key, dotData[key][1], normalized=True, plot=True)
-
-    # col_names = ['HbO2','Hb'] # What column names are we training on?
-
-    ## Normalize specified columns within each image (denoted by FloatName)
-    # uniqFloats = df['FloatName'].unique()
-    # for uniqFloat in uniqFloats: 
-    #     # Normalize ratios from 0 to 1 within each image for each columnn
-    #     for outputName in ['Hb/HbO2']:
-    #         mask = df['FloatName'] == uniqFloat # predictions for one ID
-    #         temp_col = df.loc[mask, outputName]
-    #         df.loc[mask, outputName] = temp_col - min(temp_col) + 0.001 # adding 0.001 avoids error when there is only one sample in the category
-    #         temp_col = df.loc[mask, outputName]
-    #         df.loc[mask, outputName] = temp_col / max(temp_col)
-
-    ## FIT MODELS AND SAVE OUTPUT
-    TN, FP, FN, TP = 0, 0, 0, 0 # initialize confusion matrix tally
-    uniqIDs = df['ID'].unique() # find unique IDs
-
-    # Initialize a dataframe for Location of each classification
-    PredLocs = pd.DataFrame([])
-    coefs = pd.DataFrame([])
-
-    # Initialize a dataframe for confusion matricies
-    confusions = pd.DataFrame(columns=['ID','TN','FP','FN','TP'])
-
-    selectedNums = [int(frac*df.shape[0]) for frac in fracs] # convert the fraction to a number
-    # Loop over the selected number of data and each iteration
-    for selectedNum in selectedNums:
-        for i in range(iterations): # iterate multiple times for error bars
+    def train_and_evaluate(self):
+        '''
+        Trains the model and evaluates it using cross-validation
+        '''
+        for i in range(self.iterations):
             print(f'Starting iteration: {i}')
-            random_state = np.random.randint(0,4294967295) # generate random integer for random state
-            dataFrac = df.sample(n=selectedNum,random_state=random_state) # include a fraction of the data 
-            kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state) #shuffle is important to avoid bias
-            
-            # Run each fold in parallel
-            foldOutput = Parallel(n_jobs=n_jobs)(
-                delayed(training.process_fold)(foldNum, train_index, test_index, i)
-                for foldNum, (train_index, test_index) in enumerate(kf.split(uniqIDs))
+            random_state = np.random.randint(0, 4294967295)
+            data_frac = self.df.sample(n=self.selected_num, random_state=random_state) # sample a subset of df
+            while  not np.array_equal(self.uniq_ids, np.sort(data_frac['ID'].unique())): # Resample if the fraction has zero examples for any class
+                data_frac = self.df.sample(n=self.selected_num, random_state=random_state)
+            kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=random_state)
+            fold_output = Parallel(n_jobs=self.n_jobs)( # process each fold in parallel
+                delayed(ModelTrainer.process_fold)(fold_num, train_index, test_index, i, self.uniq_ids, data_frac, self.y_categories, self.y_col, self.col_names, self.scale, self.optimize, random_state)
+                for fold_num, (train_index, test_index) in enumerate(kf.split(self.uniq_ids))
             )
-            # unpack then process output
-            confusionFold, PredLocFold, IDaccFold, coefFold = zip(*foldOutput) 
-            confusionFold = pd.concat(confusionFold, ignore_index=True)
-            PredLocFold = pd.concat(PredLocFold, ignore_index=True)
-            IDaccFold = pd.concat(IDaccFold, ignore_index=True)
-            coefFold = pd.concat(coefFold, ignore_index=True)
-
-            # add outputs to a dataframe for all of the predictions combined
-            confusions = pd.concat([confusions, confusionFold])
-            PredLocs = pd.concat([PredLocs, PredLocFold])
-            # coefFold.columns = [col.split('_')[1] for col in coefFold.columns] # Change all of the columns to be just numbers
-            coefs = pd.concat([coefs,coefFold])
+            confusion_fold, pred_loc_fold, ID_acc_fold, coef_fold = zip(*fold_output)
+            confusion_fold = pd.concat(confusion_fold, ignore_index=True)
+            pred_loc_fold = pd.concat(pred_loc_fold, ignore_index=True)
+            ID_acc_fold = pd.concat(ID_acc_fold, ignore_index=True)
+            coef_fold = pd.concat(coef_fold, ignore_index=True)
+            self.confusions = pd.concat([self.confusions, confusion_fold])
+            self.PredLocs = pd.concat([self.PredLocs, pred_loc_fold])
+            self.coefs = pd.concat([self.coefs, coef_fold])
             if i == 0:
-                IDaccs = IDaccFold
-            else: 
-                IDaccs = IDaccs.merge(IDaccFold, on=['ID',y_col], how='left')
-            pass
-    print('Done with Training')
+                self.IDaccs = ID_acc_fold
+            else:
+                self.IDaccs = self.IDaccs.merge(ID_acc_fold, on=['ID', self.y_col], how='left')
+        print('Done with Training')
 
-    #Add averages to dataframe
-    threshold = 0.5 # what fraction of patches of edemaTrue to consider whole leg edemaTrue
-    IDavg = IDaccs.drop(['ID',y_col], axis=1).T.mean() #Exclude the non-numerical data, and find mean across IDs using transpose
-    IDaccs.insert(2,'ID Avg',IDavg) # Insert ID average
-    for thresh in [threshold]: # np.arange(0.3,0.7,0.1): # iterate over possible thresholds
-        thresh = np.round(thresh, 1)
-        IDroundAvg = IDaccs.drop(['ID',y_col], axis=1).T.apply(lambda cell: postprocessing.roundCells(cell,thresh)).mean() # round cells to threshold (thresh) and then take the mean across the rows
-        IDaccs.insert(2,f'ID {thresh} Rounded Avg',IDroundAvg) # add thresholded values as a new column
+    def save_results(self):
+        '''
+        Saves results, plots, and metadata
+        '''
+        threshold = 0.5
+        ID_avg = self.IDaccs.drop(['ID', self.y_col], axis=1).T.mean()
+        self.IDaccs.insert(2, 'ID Avg', ID_avg)
+        for thresh in [threshold]:
+            thresh = np.round(thresh, 1)
+            ID_round_avg = self.IDaccs.drop(['ID', self.y_col], axis=1).T.apply(lambda cell: PostProcessor.round_cells(cell, thresh)).mean()
+            self.IDaccs.insert(2, f'ID {thresh} Rounded Avg', ID_round_avg) # add thresholded values as a new column
+        self.IDaccs.loc['Column Average'] = self.IDaccs.drop(['ID', self.y_col], axis=1).mean(axis=0) # add average across columns
+        has_folder_has_avg = (self.IDaccs.loc[:, self.y_col].notna()) | (self.IDaccs.index == 'Column Average')
+        iteration = self.IDaccs.loc[has_folder_has_avg, 'Iter 0 Fold 0':f'Iter {self.iterations-1} Fold {self.n_splits-1}']
+        CI95 = iteration.apply(lambda row: PostProcessor.bootstrap_series(row), axis=1) # apply 95% CI to iterations data
+        self.IDaccs.insert(3, '95%CI', CI95)
+        CI95round = iteration.apply(lambda row: PostProcessor.bootstrap_series(row, round=True), axis=1)
+        self.IDaccs.insert(3, '95%CIround', CI95round)
+        yerr = self.IDaccs.loc[:, '95%CI'].apply(PostProcessor.half_difference) # apply the halfDifference equation to get the error needed for bar chart
+        self.IDaccs.insert(2, 'Yerr', yerr)
+        yerr_rounded = self.IDaccs.loc[:, '95%CIround'].apply(PostProcessor.half_difference)
+        self.IDaccs.insert(2, 'YerrRounded', yerr_rounded)
+        self.IDaccs.insert(2, 'Labels', 'ID: ' + self.IDaccs['ID'].astype(str) + '\n' + 'Cat: ' + self.IDaccs[self.y_col].astype(str)) # find values to plot in bar chart
+        self.IDaccs.loc['Column Average', 'Labels'] = 'Column Average'
+        Folder_acc = self.IDaccs.groupby(self.y_col)['ID Avg'].mean() # find accuracy by foldernam; add to ID accs
+        Folder_acc = Folder_acc.reset_index(inplace=False)
+        Folder_acc['Labels'] = Folder_acc[self.y_col]
+        self.IDaccs = pd.concat([self.IDaccs, Folder_acc], axis=0)
+        Folder_round = self.IDaccs.groupby(self.y_col)['ID 0.5 Rounded Avg'].mean() # find rounded accuracy by foldername; add to ID_accs
+        Folder_round = Folder_round.reset_index(inplace=False)
+        self.IDaccs.loc[self.IDaccs['Labels'] == self.y_categories[1], 'ID 0.5 Rounded Avg'] = Folder_round.loc[Folder_round[self.y_col] == self.y_categories[1], 'ID 0.5 Rounded Avg']
+        self.IDaccs.loc[self.IDaccs['Labels'] == self.y_categories[0], 'ID 0.5 Rounded Avg'] = Folder_round.loc[Folder_round[self.y_col] == self.y_categories[0], 'ID 0.5 Rounded Avg']
+        end_time = time.time()
+        print(f'Total time: {end_time - self.start_time}')
+        patch_fig, patch_acc = PostProcessor.column_bar_plot(self.IDaccs, self.IDaccs['ID Avg'].notna(), 'Labels', 'ID Avg', 'Yerr', f'ID \n {self.y_col}', 'Patch Accuracy', f'{self.data_config}\ny:{self.y_col} n={self.selected_num} iterations={self.iterations} fracs={self.fracs} \n data:{self.filepath.split("/")[-1]}')
+        coef_fig = plt.figure(figsize=(18, 4)) # Plot the SVM coefficients
+        coef_95CI = self.coefs.apply(lambda col: PostProcessor.bootstrap_series(col), axis=0)
+        filename = self.filepath.split("/")[-1]
+        plt.plot(abs(self.coefs.median(axis=0)), label='abs(median)')
+        plt.plot(coef_95CI.iloc[0, :], label='lower')
+        plt.plot(coef_95CI.iloc[1, :], label='upper')
+        plt.xticks(rotation=90)
+        plt.title(f'{self.data_config} data:{self.filepath.split("/")[-1]} \n iterations: {self.iterations} n={self.selected_num} fracs={self.fracs}')
+        plt.legend()
+        plt.tight_layout()
+        confusion = self.confusions.groupby('ID').sum() # find the confusion matricies for each ID
+        confusion = confusion.reset_index()
+        date = self.filepath.split('/')[-1].split('_')[0]
+        self.IDaccs.loc['Info', 'Labels'] = f'input filename: {filename}' # add metadata
+        folder = Path(f'/Users/maycaj/Downloads/SpectrumClassifier2 {str(datetime.now().strftime("%Y-%m-%d %H %M"))}/')
+        folder.mkdir(exist_ok=True)
+        # IDaccs.to_csv(f'/Users/maycaj/Downloads/{date}IDaccs_n={selectedNum}i={iterations}.csv') # Save the accuracy as csv
+        # PredLocs.to_csv(f'/Users/maycaj/Downloads/{date}PredLocs_n={selectedNum}i={iterations}.csv.gz', compression='gzip', index=False) # Save predictions with locations as csv
+        # confusion.to_csv(f'/Users/maycaj/Downloads/{date}confusion_n={selectedNum}i={iterations}.csv')
+        # confusions.to_csv(f'/Users/maycaj/Downloads/{date}confusions_n={selectedNum}i={iterations}.csv')
+        # wholeLeg.savefig(f'/Users/maycaj/Downloads/{date}wholeLeg_n={selectedNum}i={iterations}.pdf')
+        patch_fig.savefig(folder / f'patch__acc={patch_acc}pct={self.fracs}i={self.iterations} {filename}.pdf')
+        coef_fig.savefig(folder / f'coef__acc={patch_acc}pct={self.fracs}i={self.iterations } {filename}.pdf')
+        self.coefs.to_csv(folder / f'coefs__acc={patch_acc}pct={self.fracs}i={self.iterations} {filename}', index=False)
+        shutil.copy(sys.argv[0], folder / 'SpectrumClassifier2.py')
+        plt.show()
+        print('All done ;)')
+        breakpoint()
 
-    # add average across columns
-    IDaccs.loc['Column Average'] = IDaccs.drop(['ID',y_col], axis=1).mean(axis=0) 
+    def run(self):
+        '''
+        Main method to execute the entire pipeline
+        '''
+        self.process_data()
+        self.train_and_evaluate()
+        self.save_results()
 
-    # apply 95% CI to iterations data
-    hasFolderHasAvg = (IDaccs.loc[:,y_col].notna()) | (IDaccs.index == 'Column Average') # select rows with folder names and the column average
-    iteration = IDaccs.loc[hasFolderHasAvg, 'Iter 0 Fold 0':f'Iter {i} Fold {n_splits-1}'] # select all of iteration data
-    # iteration = IDaccs.loc[hasFolderHasAvg, 'Iter 0 Fold 0':f'Iter {i} Fold {foldNum}'] # select all of iteration data
-    CI95 = iteration.apply(lambda row: postprocessing.bootstrapSeries(row), axis=1)
-    IDaccs.insert(3, '95%CI', CI95)
-    CI95round = iteration.apply(lambda row: postprocessing.bootstrapSeries(row, round=True), axis=1)
-    IDaccs.insert(3, '95%CIround', CI95round)
-
-    # notColAvg = IDaccs.index != 'Column Average'
-    yerr = IDaccs.loc[:,'95%CI'].apply(postprocessing.halfDifference) # apply the halfDifference equation to get the error needed for bar chart
-    IDaccs.insert(2, 'Yerr', yerr)
-    yerrRounded = IDaccs.loc[:,'95%CIround'].apply(postprocessing.halfDifference)
-    IDaccs.insert(2, 'YerrRounded', yerrRounded)
-
-    # find values to plot in bar chart
-    IDaccs.insert(2,'Labels','ID: ' + IDaccs['ID'].astype(str) + '\n' + 'Cat: ' + IDaccs[y_col].astype(str)) # combine columns for figure labels
-    IDaccs.loc['Column Average','Labels'] = 'Column Average'
-
-    # Find accuracy by Foldername; Add to IDaccs
-    FolderAcc = IDaccs.groupby(y_col)['ID Avg'].mean() # find accuracy by foldername
-    FolderAcc = FolderAcc.reset_index(inplace=False)
-    FolderAcc['Labels'] = FolderAcc[y_col]
-    IDaccs = pd.concat([IDaccs, FolderAcc], axis=0)
-
-    # Find rounded accuracy by Foldername; Add to IDaccs
-    FolderRound = IDaccs.groupby(y_col)['ID 0.5 Rounded Avg'].mean() # rounded accuracy grouped by y_col categories
-    FolderRound = FolderRound.reset_index(inplace=False)
-    IDaccs.loc[IDaccs['Labels']==y_categories[1],'ID 0.5 Rounded Avg'] = FolderRound.loc[FolderRound[y_col]==y_categories[1],'ID 0.5 Rounded Avg']
-    IDaccs.loc[IDaccs['Labels']==y_categories[0],'ID 0.5 Rounded Avg'] = FolderRound.loc[FolderRound[y_col]==y_categories[0],'ID 0.5 Rounded Avg']
-
-    end_time = time.time()
-    print(f'Total time: {end_time-start_time}')
-
-    # wholeLeg = columnBarPlot(IDaccs, IDaccs['ID 0.5 Rounded Avg'].notna(),'Labels','ID 0.5 Rounded Avg','YerrRounded',f'ID \n {y_col}','Accuracy',f'{y_col} Leg Acc n={selectedNum} iterations={iterations}')
-    patchFig, patchAcc = postprocessing.columnBarPlot(IDaccs, IDaccs['ID Avg'].notna(),'Labels','ID Avg','Yerr',f'ID \n {y_col}','Patch Accuracy',f'{dataConfig}\ny:{y_col} n={selectedNum} iterations={iterations} fracs={fracs} \n data:{filepath.split("/")[-1]}')
-
-    ## Plot the SVM coefficients
-    coefFig = plt.figure(figsize=(18,4))
-    
-    coef_95CI = coefs.apply(lambda col: postprocessing.bootstrapSeries(col), axis=0)
-    filename = filepath.split("/")[-1]
-    plt.plot(coef_95CI.iloc[0,:],label='lower')
-    plt.plot(coef_95CI.iloc[1,:],label='upper')
-    plt.xticks(rotation=90)
-    plt.title(f'{dataConfig} data:{filepath.split("/")[-1]} \n iterations: {iterations} n={selectedNum} fracs={fracs}')
-    plt.legend()
-    plt.tight_layout()
-
-    # Find the confusion matricies for each ID
-    confusion = confusions.groupby('ID').sum()
-    confusion = confusion.reset_index()
-
-    # add metadata and save 
-    date = filepath.split('/')[-1].split('_')[0] # find date from file name
-    IDaccs.loc['Info','Labels'] = f'input filename: {filename}' # add input filename
-
-    ## save CSVs, pdfs, and a copy of the script in the output file
-    # meta_row = pd.DataFrame([{col: '' for col in coefs.columns}])
-    # meta_row[coefs.columns[0]] = filename
-    # coefs = pd.concat([coefs, meta_row], axis=0)
-    folder = Path(f'/Users/maycaj/Downloads/SpectrumClassifier2 {str(datetime.now().strftime("%Y-%m-%d %H %M"))}/')
-    folder.mkdir(exist_ok=True)
-    # IDaccs.to_csv(f'/Users/maycaj/Downloads/{date}IDaccs_n={selectedNum}i={iterations}.csv') # Save the accuracy as csv
-    # PredLocs.to_csv(f'/Users/maycaj/Downloads/{date}PredLocs_n={selectedNum}i={iterations}.csv.gz', compression='gzip', index=False) # Save predictions with locations as csv
-    # confusion.to_csv(f'/Users/maycaj/Downloads/{date}confusion_n={selectedNum}i={iterations}.csv')
-    # confusions.to_csv(f'/Users/maycaj/Downloads/{date}confusions_n={selectedNum}i={iterations}.csv')
-    # wholeLeg.savefig(f'/Users/maycaj/Downloads/{date}wholeLeg_n={selectedNum}i={iterations}.pdf')
-    patchFig.savefig(folder / f'patch__acc={patchAcc}pct={fracs[0]}i={iterations} {filename}.pdf')
-    coefFig.savefig(folder / f'coef__acc={patchAcc}pct={fracs[0]}i={iterations} {filename}.pdf')
-    coefs.to_csv(folder / f'coefs__acc={patchAcc}pct={fracs[0]}i={iterations} {filename}', index=False)
-    shutil.copy(sys.argv[0], folder / 'SpectrumClassifier2.py')
-
-    plt.show()
-
-    print('All done ;)')
-    # breakpoint()
-    pass
+if __name__ == '__main__':
+    classifier = SpectrumClassifier(
+        fracs=0.0001, filepath='/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
+        # fracs=1, filepath='/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv',
+        iterations=3,
+        n_jobs=-1,
+        y_col='Foldername',
+        scale=True,
+        optimize=True,
+        nm_start=411.27,
+        nm_end=1004.39,
+        data_config = 'Round 1 & 2: peripheral or edemafalse'
+    )
+    classifier.run()
+    breakpoint()
