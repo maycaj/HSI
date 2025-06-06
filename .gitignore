@@ -1,0 +1,13 @@
+/.venv
+/__pycache__
+*.pdf
+/Model Preds
+/PatchCSVs
+/Pearson
+/Raw Data
+/RGB
+Scripts/.DS_Store
+*.pyc
+Scripts/test.py
+/SXAnalysis_Beta_020924
+/Visualization
