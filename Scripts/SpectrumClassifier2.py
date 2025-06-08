@@ -240,7 +240,9 @@ class PostProcessor:
         return fig, acc
 
 class SpectrumClassifier:
-    def __init__(self, filepath, fracs, iterations, n_jobs, y_col, scale, optimize, nm_start, nm_end, data_config):
+    def __init__(self, run_num, save_folder, filepath, fracs, iterations, n_jobs, y_col, scale, optimize, nm_start, nm_end, data_config):
+        self.run_num = run_num
+        self.save_folder = save_folder
         self.filepath = filepath
         self.fracs = fracs
         self.iterations = iterations
@@ -313,6 +315,8 @@ class SpectrumClassifier:
                 delayed(ModelTrainer.process_fold)(fold_num, train_index, test_index, i, self.uniq_ids, data_frac, self.y_categories, self.y_col, self.col_names, self.scale, self.optimize, random_state)
                 for fold_num, (train_index, test_index) in enumerate(kf.split(self.uniq_ids))
             )
+
+            # joblib requires concatenation of the outputs 
             confusion_fold, pred_loc_fold, ID_acc_fold, coef_fold = zip(*fold_output)
             confusion_fold = pd.concat(confusion_fold, ignore_index=True)
             pred_loc_fold = pd.concat(pred_loc_fold, ignore_index=True)
@@ -325,12 +329,14 @@ class SpectrumClassifier:
                 self.IDaccs = ID_acc_fold
             else:
                 self.IDaccs = self.IDaccs.merge(ID_acc_fold, on=['ID', self.y_col], how='left')
-        print('Done with Training')
+        end_time = time.time()
+        print(f'Done with Training \n Total time: {end_time - self.start_time}')
 
     def save_results(self):
         '''
         Saves results, plots, and metadata
         '''
+        # Make a dataframe ID accs with each ID and their corresponding accuracies; Apply bootstrapping to create a 95% confidence interval
         threshold = 0.5
         ID_avg = self.IDaccs.drop(['ID', self.y_col], axis=1).T.mean()
         self.IDaccs.insert(2, 'ID Avg', ID_avg)
@@ -359,10 +365,17 @@ class SpectrumClassifier:
         Folder_round = Folder_round.reset_index(inplace=False)
         self.IDaccs.loc[self.IDaccs['Labels'] == self.y_categories[1], 'ID 0.5 Rounded Avg'] = Folder_round.loc[Folder_round[self.y_col] == self.y_categories[1], 'ID 0.5 Rounded Avg']
         self.IDaccs.loc[self.IDaccs['Labels'] == self.y_categories[0], 'ID 0.5 Rounded Avg'] = Folder_round.loc[Folder_round[self.y_col] == self.y_categories[0], 'ID 0.5 Rounded Avg']
-        end_time = time.time()
-        print(f'Total time: {end_time - self.start_time}')
-        patch_fig, patch_acc = PostProcessor.column_bar_plot(self.IDaccs, self.IDaccs['ID Avg'].notna(), 'Labels', 'ID Avg', 'Yerr', f'ID \n {self.y_col}', 'Patch Accuracy', f'{self.data_config}\ny:{self.y_col} n={self.selected_num} iterations={self.iterations} fracs={self.fracs} \n data:{self.filepath.split("/")[-1]}')
-        coef_fig = plt.figure(figsize=(18, 4)) # Plot the SVM coefficients
+
+        # Plot IDaccs as a barchart with error bars
+        patch_fig, patch_acc = PostProcessor.column_bar_plot(self.IDaccs, self.IDaccs['ID Avg'].notna(), 'Labels',
+                                                              'ID Avg', 'Yerr', f'ID \n {self.y_col}', 'Patch Accuracy',
+                                                                f'{self.data_config}\ny:{self.y_col} n={self.selected_num} iterations={self.iterations} fracs={self.fracs} \n data:{self.filepath.split("/")[-1]}')
+        leg_fig, patch_acc = PostProcessor.column_bar_plot(self.IDaccs, self.IDaccs[f'ID {thresh} Rounded Avg'].notna(), 'Labels',
+                                                              'ID 0.5 Rounded Avg', 'YerrRounded', f'ID \n {self.y_col}', 'Rounded Accuracy',
+                                                                f'{self.data_config}\ny:{self.y_col} n={self.selected_num} iterations={self.iterations} fracs={self.fracs} \n data:{self.filepath.split("/")[-1]}')
+
+        # Plot the SVM coefficients
+        coef_fig = plt.figure(figsize=(18, 4)) 
         coef_95CI = self.coefs.apply(lambda col: PostProcessor.bootstrap_series(col), axis=0)
         filename = self.filepath.split("/")[-1]
         plt.plot(abs(self.coefs.median(axis=0)), label='abs(median)')
@@ -372,24 +385,25 @@ class SpectrumClassifier:
         plt.title(f'{self.data_config} data:{self.filepath.split("/")[-1]} \n iterations: {self.iterations} n={self.selected_num} fracs={self.fracs}')
         plt.legend()
         plt.tight_layout()
-        confusion = self.confusions.groupby('ID').sum() # find the confusion matricies for each ID
+
+        # find the confusion matricies for each ID
+        confusion = self.confusions.groupby('ID').sum() 
         confusion = confusion.reset_index()
-        date = self.filepath.split('/')[-1].split('_')[0]
+
+        # Save all of the dataframes, figures, and this script into a new folder for each model run
+        folder = self.save_folder / f'Run {self.run_num}'
+        folder.mkdir(parents=True, exist_ok=True)
         self.IDaccs.loc['Info', 'Labels'] = f'input filename: {filename}' # add metadata
-        folder = Path(f'/Users/maycaj/Downloads/SpectrumClassifier2 {str(datetime.now().strftime("%Y-%m-%d %H %M"))}/')
-        folder.mkdir(exist_ok=True)
         # IDaccs.to_csv(f'/Users/maycaj/Downloads/{date}IDaccs_n={selectedNum}i={iterations}.csv') # Save the accuracy as csv
         # PredLocs.to_csv(f'/Users/maycaj/Downloads/{date}PredLocs_n={selectedNum}i={iterations}.csv.gz', compression='gzip', index=False) # Save predictions with locations as csv
         # confusion.to_csv(f'/Users/maycaj/Downloads/{date}confusion_n={selectedNum}i={iterations}.csv')
         # confusions.to_csv(f'/Users/maycaj/Downloads/{date}confusions_n={selectedNum}i={iterations}.csv')
-        # wholeLeg.savefig(f'/Users/maycaj/Downloads/{date}wholeLeg_n={selectedNum}i={iterations}.pdf')
+        leg_fig.savefig(folder / f'leg__pct={self.fracs}i={self.iterations} {filename}.pdf')
         patch_fig.savefig(folder / f'patch__acc={patch_acc}pct={self.fracs}i={self.iterations} {filename}.pdf')
         coef_fig.savefig(folder / f'coef__acc={patch_acc}pct={self.fracs}i={self.iterations } {filename}.pdf')
         self.coefs.to_csv(folder / f'coefs__acc={patch_acc}pct={self.fracs}i={self.iterations} {filename}', index=False)
-        shutil.copy(sys.argv[0], folder / 'SpectrumClassifier2.py')
-        plt.show()
+        shutil.copy(sys.argv[0], folder / 'SpectrumClassifier2.py') 
         print('All done ;)')
-        breakpoint()
 
     def run(self):
         '''
@@ -400,17 +414,53 @@ class SpectrumClassifier:
         self.save_results()
 
 if __name__ == '__main__':
-    classifier = SpectrumClassifier(
-        fracs=0.0001, filepath='/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
-        # fracs=1, filepath='/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv',
-        iterations=3,
-        n_jobs=-1,
-        y_col='Foldername',
-        scale=True,
-        optimize=True,
-        nm_start=411.27,
-        nm_end=1004.39,
-        data_config = 'Round 1 & 2: peripheral or edemafalse'
-    )
-    classifier.run()
-    breakpoint()
+    paramters_dict = [
+        {'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
+        #'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
+        'iterations':2,
+        'n_jobs':-1,
+        'y_col':'Foldername',
+        'scale':True,
+        'optimize':True,
+        'nm_start':411.27,
+        'nm_end':1004.39,
+        'data_config' : 'Round 1 & 2: peripheral or edemafalse'},
+
+        {#'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
+        'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
+        'iterations':2,
+        'n_jobs':-1,
+        'y_col':'Foldername',
+        'scale':True,
+        'optimize':False,
+        'nm_start':411.27,
+        'nm_end':1004.39,
+        'data_config' : 'Round 1 & 2: peripheral or edemafalse'},
+
+        {#'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
+        'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
+        'iterations':2,
+        'n_jobs':-1,
+        'y_col':'Foldername',
+        'scale':False,
+        'optimize':True,
+        'nm_start':411.27,
+        'nm_end':1004.39,
+        'data_config' : 'Round 1 & 2: peripheral or edemafalse'},
+
+        {#'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
+        'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
+        'iterations':2,
+        'n_jobs':-1,
+        'y_col':'Foldername',
+        'scale':False,
+        'optimize':False,
+        'nm_start':411.27,
+        'nm_end':1004.39,
+        'data_config' : 'Round 1 & 2: peripheral or edemafalse'}
+    ]
+    save_folder = Path(f'/Users/maycaj/Downloads/SpectrumClassifier2 {str(datetime.now().strftime("%Y-%m-%d %H %M"))}')
+    for run_num, parameters in enumerate(paramters_dict):
+        classifier = SpectrumClassifier(run_num, save_folder, **parameters)
+        classifier.run()
+    plt.show()

@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import pathlib as path
  
 #CONFIGURATION
-svm_weights_csv_path = path.PosixPath('/Users/maycaj/Downloads/SpectrumClassifier2 2025-06-06 09 00/coefs__acc=59.3pct=1i=3 May_29_NOCR_FullRound1and2AllWLs_medians.csv')
+svm_weights_csv_path = path.PosixPath('/Users/maycaj/Downloads/SpectrumClassifier2 2025-06-08 11 53/coefs__acc=66.1pct=1i=3 May28_CR_FullRound1and2AllWLs_medians.csv')
 chromophore_datasets = {
     'Hb_diff': '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv',
     'Hb_deoxy': '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv',
@@ -84,9 +84,9 @@ for label, chromo_path in chromophore_datasets.items():
         yaxis2=dict(title='SVM Weights (Z)', overlaying='y', side='right', showgrid=False),
         template='plotly_white', height=500
     )
-    html_path = f'/Users/maycaj/Documents/HSI/Pearson/{label}_vs_svm_pearson.html'
-    pdf_path = f'/Users/maycaj/Documents/HSI/Pearson/{label}_vs_svm_pearson.pdf'
-    pyo.plot(fig, filename=html_path, auto_open=True)
+    html_path = svm_weights_csv_path.parent / f'pearson_r={r:.2f}_{label}_vs_svm.html'
+    pdf_path = f'/Users/maycaj/Documents/HSI/Pearson/pearson_r={r:.2f}_{label}_vs_svm.pdf'
+    pyo.plot(fig, filename=str(html_path), auto_open=True)
  
     # # Matplotlib version
     # plt.figure(figsize=(6, 3))
