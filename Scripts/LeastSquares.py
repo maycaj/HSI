@@ -12,13 +12,14 @@ from joblib import Parallel, delayed
 import time
 import pyarrow.csv as pv
 from wakepy import keep
+import multiprocessing
 
 class LeastSquaresProcessor:
     """
     Class to perform Fully Constrained Linear Least Squares on Hyperspectral Data.
     """
 
-    def __init__(self, chrom_files, nm_start=516, nm_end=932.93):
+    def __init__(self, chrom_files, nm_start=411.27, nm_end=1004.39):
         """
         Initialize the processor with chromophore files and wavelength range.
 
@@ -31,6 +32,7 @@ class LeastSquaresProcessor:
         self.nm_start = nm_start
         self.nm_end = nm_end
         self.chrom_interp = pd.DataFrame([])
+        self.derivative = True
 
     def load_df(self, csv_path):
         '''
@@ -79,6 +81,9 @@ class LeastSquaresProcessor:
         y_interp = y_interp - min(y_interp)
         if max(y_interp) != 0:
             y_interp = y_interp / max(y_interp)
+        if self.derivative:
+            y_interp = np.gradient(y_interp)
+            y_abs = np.gradient(y_abs)
         return x_interp, y_interp, x_abs, y_abs
 
     def interpolate_chromophores(self, wave_cols_num, plot_interp=True):
@@ -120,14 +125,14 @@ class LeastSquaresProcessor:
         A_obs = df.iloc[i,:]
         label = A_obs['FloatName'] + ' ' + A_obs['Foldername']
         A_obs = A_obs[wave_cols].values
-
-        M = self.chrom_interp[y_cols].values # [n_wavelengths x n_chromophores]
-    
+        if self.derivative:
+            A_obs = np.gradient(A_obs)
         A_obs = A_obs - min(A_obs) # Normalize A_obs from 0 to 1
         A_obs = A_obs / max(A_obs)
         A_obs_smo = np.convolve(A_obs, np.array([1/3,1/3,1/3]),mode='same') # Smooth with a 3-point mean
         A_obs_smo[0], A_obs_smo[-1] = A_obs[0], A_obs[-1] # Keep the same first and last points so we don't have artifacts
 
+        M = self.chrom_interp[y_cols].values # [n_wavelengths x n_chromophores]
         n_chrom = M.shape[1] # Number of chromophores
 
         # Objective function: squared error. This is the function to minimize
@@ -202,15 +207,23 @@ class LeastSquaresProcessor:
         x_cols = [col for col in self.chrom_interp.columns if col.startswith('xInterp')]
         y_cols = [col for col in self.chrom_interp.columns if col.startswith('yInterp')]
 
-        fracPercents = Parallel(n_jobs=n_jobs)(
-                delayed(self.chrom2observed)(i, df, x_cols, y_cols, wave_cols_num, wave_cols, plot_recon=plot_recon)
-                for i in range(df.shape[0])
-            )
-        
+        # Prepare arguments for multiprocessing
+        args = [
+            (i, df, x_cols, y_cols, wave_cols_num, wave_cols, plot_recon)
+            for i in range(df.shape[0])
+        ]
+
+        # Determine the number of jobs
+        n_jobs = multiprocessing.cpu_count() if n_jobs == -1 else n_jobs
+
+        # Use multiprocessing.Pool for parallel processing
+        with multiprocessing.Pool(processes=n_jobs) as pool:
+            fracPercents = pool.starmap(self.chrom2observed, args)
+
         fracPercents = pd.concat(fracPercents, ignore_index=True)
         fracPercents.reset_index(drop=True, inplace=True)
         df.reset_index(drop=True, inplace=True)
-        df = pd.concat([fracPercents, df],axis=1) # add fracPercents to original dataframe
+        df = pd.concat([fracPercents, df], axis=1) # add fracPercents to original dataframe
         return df, fracPercents
 
 if __name__ == '__main__':
@@ -221,7 +234,7 @@ if __name__ == '__main__':
         ('/Users/maycaj/Documents/HSI/Absorbances/Eumelanin Absorbance.csv', 'lambda nm', 'Eumelanin cm-1/M'),
         ('/Users/maycaj/Documents/HSI/Absorbances/Fat Absorbance.csv', 'lambda nm', 'fat'), 
         ('/Users/maycaj/Documents/HSI/Absorbances/Pheomelanin.csv', 'lambda nm', 'Pheomelanin cm-1/M'),
-        # ('/Users/maycaj/Documents/HSI/Absorbances/Water Absorbance.csv', 'lambda nm', 'H2O 1/cm')
+        ('/Users/maycaj/Documents/HSI/Absorbances/Water Absorbance.csv', 'lambda nm', 'H2O 1/cm')
     ]
 
     processor = LeastSquaresProcessor(chrom_files)
@@ -229,22 +242,22 @@ if __name__ == '__main__':
     with keep.running(on_fail='warn'): # keeps running when lid is shut
         # Your Python script code here
         # This will continue running while the script is active, even if the lid is closed
+        # filepath = '/Users/maycaj/Documents/HSI/PatchCSVs/Mar25_NoCR_PostDeoxyCrop_Medians.csv'
         filepath = '/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv'
         df, filename = processor.load_df(filepath)
 
         # Select a small subset of images for efficiency purposes
-        # df = df[df['FloatName'].isin(['Edema 12 image 3 float','Edema 36 Image 3 float','Edema 19 Image 1 float'])]
-        df = df.sample(n=6)
+        df = df[df['FloatName'].isin(['Edema 12 image 3 float','Edema 36 Image 3 float','Edema 19 Image 1 float'])]
+        # df = df.sample(n=6)
 
         start_ls = time.time()
         print('Starting least squares...')
-        df, fracPercents = processor.get_least_squares(df, False, True, -1)
+        df, fracPercents = processor.get_least_squares(df, False, False, -1)
         print(f'Done with least squares: {np.round(time.time()-start_ls,1)}s')
 
         # Save the output to a csv file 
         # df.to_csv('/Users/maycaj/Downloads' + filename + '_LLS.csv', index=False)
-        fracPercents.to_csv('/Users/maycaj/Downloads/' + 'LLS_516to600_' + filename +'.csv', index=False)
+        # fracPercents.to_csv('/Users/maycaj/Downloads/' + 'LLS_608.82to932.93_' + filename +'.csv', index=False)
 
         print('All done ;)')
-    breakpoint()
-        
+pass
