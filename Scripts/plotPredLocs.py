@@ -81,12 +81,11 @@ def highlight_pixels(csv_path, image_folder, output_folder, pred_col):
     print('Done Loading CSV')
     os.makedirs(output_folder, exist_ok=True)
    
-   
+   # Select specific images
     df = df[df['FloatName'].isin(['Edema 12 image 3 float','Edema 36 Image 3 float','Edema 19 Image 1 float'])]
 
     # Get unique images
     unique_images = df['FloatName'].unique()
-    # unique_images = ['Edema 19 Image 1 float'] # easiest image to segment veins 
    
     image_files = {f.lower(): f for f in os.listdir(image_folder)}
    
@@ -108,15 +107,15 @@ def highlight_pixels(csv_path, image_folder, output_folder, pred_col):
         # Hb and HbO2 from LLS
         # df_sel[pred_col] = df_sel['yInterp HbO2 cm-1/M'] / (df_sel['yInterp Hb cm-1/M'] + df_sel['yInterp HbO2 cm-1/M'])
 
-        # # Dot product with hemoglobins 
+        # # # Dot product with hemoglobins 
         HbO2Path = '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv'
-        nmStart = 'Wavelength_451.18' #'Wavelength_411.27'
-        nmEnd = 'Wavelength_954.83' #'Wavelength_1004.39'
-        chrom_dot_spectra(df_sel, [nmStart,nmEnd], 'HbO2 cm-1/M', 'HbO2', HbO2Path, plot=True) # Find HbO2 for each pixel
-        chrom_dot_spectra(df_sel, [nmStart,nmEnd], 'Hb cm-1/M', 'Hb', HbO2Path, plot=True) # Find Hb for each pixel
-        df_sel[pred_col] = df_sel['HbO2'] / df_sel['Hb'] 
-        sel_columns = [pred_col,'X','Y']
-        df_sel = df_sel[sel_columns]
+        nmStart = 'Wavelength_451.18' #'Wavelength_411.27' #'Wavelength_411.27'
+        nmEnd = 'Wavelength_954.83' #'Wavelength_987.82' #'Wavelength_1004.39'
+        chrom_dot_spectra(df_sel, [nmStart,nmEnd], 'HbO2 cm-1/M', 'HbO2', HbO2Path, plot=False) # Find HbO2 for each pixel
+        chrom_dot_spectra(df_sel, [nmStart,nmEnd], 'Hb cm-1/M', 'Hb', HbO2Path, plot=False) # Find Hb for each pixel
+        df_sel[pred_col] = df_sel['HbO2'] / df_sel['Hb']
+        # sel_columns = [pred_col,'X','Y']
+        # df_sel = df_sel[sel_columns]
 
         ## Normalize within each image
         # df_sel[pred_col] = df_sel[pred_col].rank(pct=True)
@@ -161,11 +160,11 @@ def highlight_pixels(csv_path, image_folder, output_folder, pred_col):
     print('Done saving images')
 
 if __name__ == '__main__':
-    predLocsPath = '/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv'
+    predLocsPath = '/Users/maycaj/Documents/HSI/PatchCSVs/June_9_NOCRAndSmoothing_FullRound1and2AllWLs.csv'
     RGBfolder = "/Users/maycaj/Documents/HSI/RGB"
     pred_col = 'HbO2/Hb'
-    LabelledOutputFolder = '/Users/maycaj/Documents/HSI/Model Preds/Hb:HbO2 preds'
+    LabelledOutputFolder = '/Users/maycaj/Documents/HSI/Model Preds/HbO2:Hb Jun 9'
 
     highlight_pixels(predLocsPath, RGBfolder, LabelledOutputFolder, pred_col)
     breakpoint()
-pass
+    pass

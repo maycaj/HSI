@@ -18,6 +18,8 @@ import sys
 import os
 from pathlib import Path
 import shutil
+import json  # Add this import for saving parameters as JSON or text
+from wakepy import keep
 
 class DataLoader:
     @staticmethod
@@ -370,7 +372,7 @@ class SpectrumClassifier:
         patch_fig, patch_acc = PostProcessor.column_bar_plot(self.IDaccs, self.IDaccs['ID Avg'].notna(), 'Labels',
                                                               'ID Avg', 'Yerr', f'ID \n {self.y_col}', 'Patch Accuracy',
                                                                 f'{self.data_config}\ny:{self.y_col} n={self.selected_num} iterations={self.iterations} fracs={self.fracs} \n data:{self.filepath.split("/")[-1]}')
-        leg_fig, patch_acc = PostProcessor.column_bar_plot(self.IDaccs, self.IDaccs[f'ID {thresh} Rounded Avg'].notna(), 'Labels',
+        leg_fig, _ = PostProcessor.column_bar_plot(self.IDaccs, self.IDaccs[f'ID {thresh} Rounded Avg'].notna(), 'Labels',
                                                               'ID 0.5 Rounded Avg', 'YerrRounded', f'ID \n {self.y_col}', 'Rounded Accuracy',
                                                                 f'{self.data_config}\ny:{self.y_col} n={self.selected_num} iterations={self.iterations} fracs={self.fracs} \n data:{self.filepath.split("/")[-1]}')
 
@@ -393,6 +395,25 @@ class SpectrumClassifier:
         # Save all of the dataframes, figures, and this script into a new folder for each model run
         folder = self.save_folder / f'Run {self.run_num}'
         folder.mkdir(parents=True, exist_ok=True)
+
+        # Save parameters as a .txt file
+        parameters_file = folder / 'parameters.txt'
+        with open(parameters_file, 'w') as f:
+            json.dump({
+                'run_num': self.run_num,
+                'save_folder': str(self.save_folder),
+                'filepath': self.filepath,
+                'fracs': self.fracs,
+                'iterations': self.iterations,
+                'n_jobs': self.n_jobs,
+                'y_col': self.y_col,
+                'scale': self.scale,
+                'optimize': self.optimize,
+                'nm_start': self.nm_start,
+                'nm_end': self.nm_end,
+                'data_config': self.data_config
+            }, f, indent=4)
+
         self.IDaccs.loc['Info', 'Labels'] = f'input filename: {filename}' # add metadata
         # IDaccs.to_csv(f'/Users/maycaj/Downloads/{date}IDaccs_n={selectedNum}i={iterations}.csv') # Save the accuracy as csv
         # PredLocs.to_csv(f'/Users/maycaj/Downloads/{date}PredLocs_n={selectedNum}i={iterations}.csv.gz', compression='gzip', index=False) # Save predictions with locations as csv
@@ -415,8 +436,8 @@ class SpectrumClassifier:
 
 if __name__ == '__main__':
     paramters_dict = [
-        {'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
-        #'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
+        {#'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
+        'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
         'iterations':2,
         'n_jobs':-1,
         'y_col':'Foldername',
@@ -426,8 +447,8 @@ if __name__ == '__main__':
         'nm_end':1004.39,
         'data_config' : 'Round 1 & 2: peripheral or edemafalse'},
 
-        {#'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
-        'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
+        {'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
+        # 'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
         'iterations':2,
         'n_jobs':-1,
         'y_col':'Foldername',
@@ -437,8 +458,8 @@ if __name__ == '__main__':
         'nm_end':1004.39,
         'data_config' : 'Round 1 & 2: peripheral or edemafalse'},
 
-        {#'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
-        'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
+        {'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
+        # 'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
         'iterations':2,
         'n_jobs':-1,
         'y_col':'Foldername',
@@ -448,8 +469,8 @@ if __name__ == '__main__':
         'nm_end':1004.39,
         'data_config' : 'Round 1 & 2: peripheral or edemafalse'},
 
-        {#'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
-        'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
+        {'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
+        # 'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
         'iterations':2,
         'n_jobs':-1,
         'y_col':'Foldername',
@@ -460,7 +481,8 @@ if __name__ == '__main__':
         'data_config' : 'Round 1 & 2: peripheral or edemafalse'}
     ]
     save_folder = Path(f'/Users/maycaj/Downloads/SpectrumClassifier2 {str(datetime.now().strftime("%Y-%m-%d %H %M"))}')
-    for run_num, parameters in enumerate(paramters_dict):
-        classifier = SpectrumClassifier(run_num, save_folder, **parameters)
-        classifier.run()
+    with keep.running(on_fail='warn'): # keeps running when lid is shut
+        for run_num, parameters in enumerate(paramters_dict):
+            classifier = SpectrumClassifier(run_num, save_folder, **parameters)
+            classifier.run()
     plt.show()
