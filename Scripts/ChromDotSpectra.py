@@ -4,7 +4,7 @@ import pandas as pd
 import pyarrow.csv as pv
 import plotly.graph_objects as go
 
-def chrom_dot_spectra(data, nmStartEnd, spectraName, outputName, absorbPath, normalized=True, plot=True):
+def chrom_dot_spectra(data, nmStartEnd, spectraName, outputName, absorbPath, d60=True, normalized=True, plot=True):
     '''
     Takes dataframe and performs dot product with Hemoglobin's response curve to see the total absorbance of hemoglobin in the skin.
     Args:
@@ -15,8 +15,8 @@ def chrom_dot_spectra(data, nmStartEnd, spectraName, outputName, absorbPath, nor
         showFig: boolean whether or not to plot
     '''
     # absorbCSV = pd.read_csv(absorbPath) # Load the HbO2 spectra
-    skinWaves = list(data.loc[:,nmStartEnd[0]:nmStartEnd[1]].columns)
-    skinWaves_float = [float(wavelength.split('_')[1]) for wavelength in skinWaves] # Find wavelengths in skindata
+    skin_waves = list(data.loc[:,nmStartEnd[0]:nmStartEnd[1]].columns)
+    # skinWaves_float = [float(wavelength.split('_')[1]) for wavelength in skinWaves] # Find wavelengths in skindata
 
     # absorbWaves = []
     # for wavelength in skinWaves_float: # match the data wavelengths with the wavelengths on the absorbance spectra
@@ -57,6 +57,14 @@ def chrom_dot_spectra(data, nmStartEnd, spectraName, outputName, absorbPath, nor
 
     # return matchedAbsorbs
 
+    # find the wavelengths where the skin wavelengths, absorbance wavelengths, and (if applicable) d60 wavelengths overlap
+    x_abs = pd.read_csv(absorbPath)['lambda nm'].values
+    dot_waves = [col for col in skin_waves if (col >= min(x_abs)) & (col <= max(x_abs))]
+    d60_path = '/Users/maycaj/Documents/HSI/Absorbances/CIE_std_illum_D65.csv'
+    if d60:
+        x_abs_d60 = pd.read_csv(d60_path)['lambda nm'].values
+        dot_waves = [col for col in dot_waves if (col >= min(x_abs_d60)) & (col <= max(x_abs_d60))]
+
     def load_and_interpolate(file_path, wavelength_column, value_column, x_interp):
         """
         Load a CSV file and interpolate the values based on the given wavelength column and value column.
@@ -72,6 +80,7 @@ def chrom_dot_spectra(data, nmStartEnd, spectraName, outputName, absorbPath, nor
             y_interp: yAbs values interpolated to match with the x_interp
             x_abs: x original absorbance values (wavelength in nm)
             y_abs: y original absorbance values 
+            range: [min_x_abs, max_x_abs]
         """
         csv_data = pd.read_csv(file_path)
         if not csv_data[wavelength_column].is_monotonic_increasing:
@@ -80,27 +89,32 @@ def chrom_dot_spectra(data, nmStartEnd, spectraName, outputName, absorbPath, nor
         y_abs = csv_data[value_column].values
         y_abs = y_abs / max(y_abs) # Scale from 0 to 1
         y_interp = np.interp(x_interp, x_abs, y_abs)
-        # y_interp[(x_interp<x_abs[0])|(x_interp>x_abs[-1])] = 0 # values outside of chromophore absorbance data are set to 0
-        y_interp = y_interp - min(y_interp)
         if max(y_interp) != 0:
             y_interp = y_interp / max(y_interp)
         return x_interp, y_interp, x_abs, y_abs
     
-    x_interp, y_interp_chrom, x_abs, y_abs= load_and_interpolate(absorbPath,'lambda nm',spectraName,skinWaves_float)
+    x_interp, y_interp_chrom, x_abs, y_abs = load_and_interpolate(absorbPath,'lambda nm',spectraName,dot_waves)
     if plot:
         fig1 = go.Figure()
-        fig1.add_trace(go.Scatter(x=x_interp, y=y_interp_chrom, name=f'Interp'))
-        fig1.add_trace(go.Scatter(x=x_abs, y=y_abs, name=f'Original'))
+        fig1.add_trace(go.Scatter(x=x_interp, y=y_interp_chrom, name=f'Interp {spectraName}'))
+        fig1.add_trace(go.Scatter(x=x_abs, y=y_abs, name=f'Original {spectraName}'))
         fig1.show()
 
-    data_selected = data.loc[:,'Wavelength_' + f"{min(skinWaves_float):.2f}":'Wavelength_' + f"{max(skinWaves_float):.2f}"]
-    data_selected = data[skinWaves]
-    data_selected = np.log10(data_selected.values**-1) # Absorbance = log10(1 / reflectance)
+    # find wavelengths that are in range for both the chromophores and the skin
+    data_selected = data.loc[:,dot_waves].values
+    if d60: # multiply by daylight axis
+        x_interp, y_interp_d60, x_abs_d60, y_abs_d60 = load_and_interpolate(d60_path,'lambda nm','D65',dot_waves)
+        if plot:
+            fig1.add_trace(go.Scatter(x=x_interp, y=y_interp_d60, name=f'Interp d60'))
+            fig1.add_trace(go.Scatter(x=x_abs_d60, y=y_abs_d60, name=f'Original d60'))
+            fig1.show()
+        data_selected = data_selected * y_interp_d60 
+    data_selected = np.log10(data_selected**-1) # Absorbance = log10(1 / reflectance)
     data[outputName] = np.dot(data_selected, y_interp_chrom)
 
     # Normalize output
     if normalized: 
-        # data[outputName] = data[outputName] - data[outputName].min() + 0.01 # Doing this gets rid of a lot of the ability to segment the veins
+        # data[outputName] = data[outputName] - data[outputName].min() + 0.01 # Doing this gets rid of a lot of the ability to segment the veins. It is also not realistic because there is still absorbance occuring even at the raw data's lowest point.
         data[outputName] = data[outputName] / data[outputName].max()
 
     return y_interp_chrom

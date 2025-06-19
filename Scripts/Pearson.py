@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import pathlib as path
  
 #CONFIGURATION
-svm_weights_csv_path = path.PosixPath('/Users/maycaj/Downloads/SpectrumClassifier2 2025-06-08 11 53/coefs__acc=66.1pct=1i=3 May28_CR_FullRound1and2AllWLs_medians.csv')
+svm_weights_csv_path = path.PosixPath('/Users/maycaj/Downloads/May28coefs_acc=92_1748823004609_0.1n=43i=10.csv')
 chromophore_datasets = {
     'Hb_diff': '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv',
     'Hb_deoxy': '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv',

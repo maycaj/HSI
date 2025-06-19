@@ -12,7 +12,7 @@ from sklearn.model_selection import KFold, GridSearchCV
 import time
 from joblib import Parallel, delayed
 import pyarrow.csv as pv
-from ChromDotSpectra import chrom_dot_spectra
+from ChromDotSpectra import chrom_dot_spectra # Make sure you have ChromDotSpectra.py in the same directory
 from datetime import datetime
 import sys
 import os
@@ -20,6 +20,8 @@ from pathlib import Path
 import shutil
 import json  # Add this import for saving parameters as JSON or text
 from wakepy import keep
+from sklearn.linear_model import SGDClassifier
+import gc
 
 class DataLoader:
     @staticmethod
@@ -32,8 +34,10 @@ class DataLoader:
         '''
         print('Loading dataframe...')
         start_time = time.time()
-        table = pv.read_csv(filepath)
-        df = table.to_pandas()
+        # table = pv.read_csv(filepath)
+        # df = table.to_pandas()
+        # table = None # Clear table after use
+        df = pd.read_csv(filepath)
         print(f'Done loading dataframe ({np.round(time.time()-start_time,1)}s)')
         return df 
 
@@ -92,7 +96,7 @@ class ModelTrainer:
         return grid_search.best_params_
 
     @staticmethod
-    def process_fold(fold_num, train_index, test_index, i, uniq_ids, data_frac, y_categories, y_col, col_names, scale, optimize, random_state):
+    def process_fold(fold_num, train_index, test_index, i, uniq_ids, data_frac, y_categories, y_col, col_names, scale, optimize, stochastic, random_state):
         '''
         Processes each fold of the data. Is wrapped into a function so that each fold can be parallelized
         Args:
@@ -124,25 +128,29 @@ class ModelTrainer:
 
         if optimize: 
             svc_params = ModelTrainer.optimize_hyperparameters(X_train, y_train)
-            svc = SVC(**svc_params)
+            svm = SVC(**svc_params)
         else:
-            svc = SVC(kernel='linear')
+            if stochastic:
+                svm = SGDClassifier(loss='hinge', max_iter=1000, tol=1e-3)
+            else:
+                svm = SVC(kernel='linear')
 
         if scale:
             scaler = StandardScaler()
             X_train = scaler.fit_transform(X_train)
-        svc.fit(X_train, y_train)
+        svm.fit(X_train, y_train)
+
         if scale:
             X_test = scaler.transform(X_test)
-        y_pred = svc.predict(X_test)
+        y_pred = svm.predict(X_test)
 
         if optimize:
             if svc_params['kernel'] == 'linear':
-                coef_fold = pd.DataFrame(svc.coef_[0].reshape(1, -1), columns=col_names)
+                coef_fold = pd.DataFrame(svm.coef_[0].reshape(1, -1), columns=col_names)
             elif svc_params['kernel'] == 'rbf':
                 coef_fold = pd.DataFrame(np.zeros((1, len(col_names))), columns=col_names)
         else:
-            coef_fold = pd.DataFrame(svc.coef_[0].reshape(1, -1), columns=col_names)
+            coef_fold = pd.DataFrame(svm.coef_[0].reshape(1, -1), columns=col_names)
 
         test.loc[:, 'correct'] = y_test == y_pred
         test.loc[:, 'yPred'] = y_pred
@@ -213,9 +221,22 @@ class PostProcessor:
             half of difference between lower CI and upper CI
         '''
         return np.abs(input[0] - input[1]) / 2
+    
+    @staticmethod
+    def get_yerr(df_CI, df_avg):
+        '''
+        Gets the asymmetric lengths of the error bars
+        Args:
+            df_CI: the bootstrapped confidence intervals 
+            df_avg: the average accuracy
+        '''
+        df_CI = np.vstack(df_CI)
+        lowers = np.abs(df_avg.values - df_CI[:,0])
+        uppers = np.abs(df_avg.values - df_CI[:,1])
+        return lowers, uppers
 
     @staticmethod
-    def column_bar_plot(df, has_values, labels_key, values_key, error_key, xlabel, ylabel, title):
+    def column_bar_plot(df, has_values, labels_key, values_key, error_key_lower, error_key_upper, xlabel, ylabel, title):
         '''
         Plots down a column, creates bar chart with error bars
         Args:
@@ -223,16 +244,22 @@ class PostProcessor:
             has_values: Key for Dataframe column. The column's rows with values will be used in this analysis
             labels_key: Key for labels column in Dataframe
             values_key: Key for values column in Dataframe
+            error_key_lower: lower length of error bar
+            error_key_upper: upper length of error bar
             xlabel, ylabel, title: for plot
         '''
         labels = df[has_values][labels_key]
         labels.loc['Column Average'] = 'Column Average'
         labels = labels.astype(str)
         values = df[has_values][values_key]
-        yerr_plot = df[has_values][error_key]
-        yerr_plot = np.vstack(yerr_plot).T
+        # yerr_plot = df[has_values][error_key]
+        # yerr_plot = np.vstack(yerr_plot)#.T
+        # yerr_lower = yerr_plot[:,0]
+        # yerr_upper = yerr_plot[:,1]
+        yerr_lower = df[error_key_lower]
+        yerr_upper = df[error_key_upper]
         fig, ax = plt.subplots()
-        bars = ax.bar(labels, values, yerr=yerr_plot)
+        bars = ax.bar(labels, values, yerr=[yerr_lower,yerr_upper])
         ax.tick_params(axis='x', labelsize=5, rotation=90)
         plt.xlabel(xlabel)
         plt.ylabel(ylabel)
@@ -242,7 +269,7 @@ class PostProcessor:
         return fig, acc
 
 class SpectrumClassifier:
-    def __init__(self, run_num, save_folder, filepath, fracs, iterations, n_jobs, y_col, scale, optimize, nm_start, nm_end, data_config):
+    def __init__(self, run_num, save_folder, filepath, fracs, iterations, n_jobs, y_col, scale, optimize, stochastic, nm_start, nm_end, data_config, chrom_keys, d60):
         self.run_num = run_num
         self.save_folder = save_folder
         self.filepath = filepath
@@ -252,15 +279,20 @@ class SpectrumClassifier:
         self.y_col = y_col
         self.scale = scale
         self.optimize = optimize
+        self.stochastic = stochastic
         self.nm_start = nm_start
         self.nm_end = nm_end
         self.data_config = data_config
+        self.chrom_keys = chrom_keys
+        self.d60 = d60
         self.start_time = time.time()
         self.df = DataLoader.load_dataframe(filepath)
 
     def process_data(self):
         '''
         Processes the data, applies configurations, and prepares for training
+        Args:
+            chrom_keys: chromophore keys to be fit on. If not none, chrom_keys are fit on instead of the wavelength columns.
         '''
         print('Selecting IDs')
         data_config = self.data_config
@@ -272,13 +304,22 @@ class SpectrumClassifier:
         }
         self.df = self.df[(self.df['ID'].isin(data_configs[data_config]) | (self.df['Foldername'] == 'EdemaFalse'))] # Keep all of EdemaFalse Data
         self.df = self.df[self.df['ID'] != 0] # Remove Dr. Pare
-        self.n_splits = len(self.df['ID'].unique())
-        self.col_names = [col for col in self.df.columns if col.startswith('Wavelength_')]
-        self.col_names = [col for col in self.col_names if (float(col.split('_')[1]) >= self.nm_start) & (float(col.split('_')[1]) <= self.nm_end)]
+        self.n_splits = len(self.df['ID'].unique()) # Make the number of splits be the same as the number of IDs (patients)
+
+        self.df.rename( # rename all of the 'Wavelength_' columns to be numberical floats
+            columns={col: float(col.split('Wavelength_')[1])
+                for col in self.df.columns if col.startswith('Wavelength_')
+        }, inplace=True)
+        self.col_names = [col for col in self.df.columns if type(col) == float] # Select the columns that are floats
+        self.col_names = [col for col in self.col_names if (col > self.nm_start) & (col < self.nm_end)] # select within specified range
+        # self.col_names = [col for col in self.df.columns if col.startswith('Wavelength_')] # column names for X
+        # self.col_names = [float(col.split('Wavelength_')[1]) for col in self.col_names] 
+        # self.col_names = [col for col in self.col_names if (float(col.split('_')[1]) >= self.nm_start) & (float(col.split('_')[1]) <= self.nm_end)]
+
         self.y_categories = self.df[self.y_col].unique()
         print('Performing dot product')
-        nm_start_end_str = ['Wavelength_' + str(self.nm_start), 'Wavelength_' + str(self.nm_end)]
-        dot_data = {
+        # nm_start_end_str = ['Wavelength_' + str(self.nm_start), 'Wavelength_' + str(self.nm_end)]
+        dot_data = { # Name, column key, and filepath of the absorbance data
             'HbO2': ('HbO2 cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv'),
             'Hb': ('Hb cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv'),
             'H2O': ('H2O 1/cm', '/Users/maycaj/Documents/HSI_III/Absorbances/Water Absorbance.csv'),
@@ -289,10 +330,11 @@ class SpectrumClassifier:
             'M': ('M', '/Users/maycaj/Documents/HSI/Absorbances/LM Absorbance.csv'),
             'S': ('S', '/Users/maycaj/Documents/HSI/Absorbances/S Absorbance.csv')
         }
-        chrom_keys = None
-        if chrom_keys is not None:
-            for key in chrom_keys:
-                chrom_dot_spectra(self.df, nm_start_end_str, dot_data[key][0], key, dot_data[key][1], normalized=True, plot=True)
+        if self.chrom_keys is not None:
+            for key in self.chrom_keys:
+                chrom_dot_spectra(self.df, [self.nm_start,self.nm_end], dot_data[key][0], key, dot_data[key][1],
+                                   self.d60, normalized=True, plot=False)
+            self.col_names = self.chrom_keys # replace column names 
         self.TN, self.FP, self.FN, self.TP = 0, 0, 0, 0
         self.uniq_ids = np.sort(self.df['ID'].unique())
 
@@ -314,7 +356,9 @@ class SpectrumClassifier:
                 data_frac = self.df.sample(n=self.selected_num, random_state=random_state)
             kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=random_state)
             fold_output = Parallel(n_jobs=self.n_jobs)( # process each fold in parallel
-                delayed(ModelTrainer.process_fold)(fold_num, train_index, test_index, i, self.uniq_ids, data_frac, self.y_categories, self.y_col, self.col_names, self.scale, self.optimize, random_state)
+                delayed(ModelTrainer.process_fold)(fold_num, train_index, test_index, i, self.uniq_ids, data_frac, 
+                                                   self.y_categories, self.y_col, self.col_names, self.scale, 
+                                                   self.optimize, self.stochastic, random_state)
                 for fold_num, (train_index, test_index) in enumerate(kf.split(self.uniq_ids))
             )
 
@@ -349,14 +393,25 @@ class SpectrumClassifier:
         self.IDaccs.loc['Column Average'] = self.IDaccs.drop(['ID', self.y_col], axis=1).mean(axis=0) # add average across columns
         has_folder_has_avg = (self.IDaccs.loc[:, self.y_col].notna()) | (self.IDaccs.index == 'Column Average')
         iteration = self.IDaccs.loc[has_folder_has_avg, 'Iter 0 Fold 0':f'Iter {self.iterations-1} Fold {self.n_splits-1}']
+
+        # Bootstrap rows and add to dataframe
         CI95 = iteration.apply(lambda row: PostProcessor.bootstrap_series(row), axis=1) # apply 95% CI to iterations data
         self.IDaccs.insert(3, '95%CI', CI95)
         CI95round = iteration.apply(lambda row: PostProcessor.bootstrap_series(row, round=True), axis=1)
         self.IDaccs.insert(3, '95%CIround', CI95round)
-        yerr = self.IDaccs.loc[:, '95%CI'].apply(PostProcessor.half_difference) # apply the halfDifference equation to get the error needed for bar chart
-        self.IDaccs.insert(2, 'Yerr', yerr)
-        yerr_rounded = self.IDaccs.loc[:, '95%CIround'].apply(PostProcessor.half_difference)
-        self.IDaccs.insert(2, 'YerrRounded', yerr_rounded)
+
+        # Add errors needed for bar charts 
+        # yerr = self.IDaccs.loc[:, '95%CI'].apply(PostProcessor.half_difference) # apply the halfDifference equation to get the error needed for bar chart
+        self.IDaccs.insert(2,'Yerr', np.abs(self.IDaccs.loc[:, '95%CI'] - self.IDaccs.loc[:, 'ID Avg']))
+        self.IDaccs.insert(2,'Yerr lower', np.vstack(self.IDaccs['Yerr'])[:,0])
+        self.IDaccs.insert(3, 'Yerr upper', np.vstack(self.IDaccs['Yerr'])[:,1])
+        # yerr_rounded = self.IDaccs.loc[:, '95%CIround'].apply(PostProcessor.half_difference)
+        self.IDaccs.insert(2,'Yerr round', np.abs(self.IDaccs.loc[:, '95%CIround'] - self.IDaccs.loc[:, f'ID {thresh} Rounded Avg']))
+        self.IDaccs.insert(2,'Yerr lower round', np.vstack(self.IDaccs['Yerr round'])[:,0])
+        self.IDaccs.insert(3, 'Yerr upper round', np.vstack(self.IDaccs['Yerr round'])[:,1])
+        # self.IDaccs.insert(2, 'YerrRounded', yerr_rounded)
+
+        # Add labels needed for bar charts
         self.IDaccs.insert(2, 'Labels', 'ID: ' + self.IDaccs['ID'].astype(str) + '\n' + 'Cat: ' + self.IDaccs[self.y_col].astype(str)) # find values to plot in bar chart
         self.IDaccs.loc['Column Average', 'Labels'] = 'Column Average'
         Folder_acc = self.IDaccs.groupby(self.y_col)['ID Avg'].mean() # find accuracy by foldernam; add to ID accs
@@ -370,10 +425,10 @@ class SpectrumClassifier:
 
         # Plot IDaccs as a barchart with error bars
         patch_fig, patch_acc = PostProcessor.column_bar_plot(self.IDaccs, self.IDaccs['ID Avg'].notna(), 'Labels',
-                                                              'ID Avg', 'Yerr', f'ID \n {self.y_col}', 'Patch Accuracy',
+                                                              'ID Avg', 'Yerr lower', 'Yerr upper', f'ID \n {self.y_col}', 'Patch Accuracy',
                                                                 f'{self.data_config}\ny:{self.y_col} n={self.selected_num} iterations={self.iterations} fracs={self.fracs} \n data:{self.filepath.split("/")[-1]}')
         leg_fig, _ = PostProcessor.column_bar_plot(self.IDaccs, self.IDaccs[f'ID {thresh} Rounded Avg'].notna(), 'Labels',
-                                                              'ID 0.5 Rounded Avg', 'YerrRounded', f'ID \n {self.y_col}', 'Rounded Accuracy',
+                                                              f'ID {thresh} Rounded Avg', 'Yerr lower round', 'Yerr upper round', f'ID \n {self.y_col}', 'Rounded Accuracy',
                                                                 f'{self.data_config}\ny:{self.y_col} n={self.selected_num} iterations={self.iterations} fracs={self.fracs} \n data:{self.filepath.split("/")[-1]}')
 
         # Plot the SVM coefficients
@@ -435,50 +490,21 @@ class SpectrumClassifier:
         self.save_results()
 
 if __name__ == '__main__':
+    # Can run several different sets of parameters in sucession 
     paramters_dict = [
-        {#'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
-        'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
-        'iterations':2,
-        'n_jobs':-1,
-        'y_col':'Foldername',
-        'scale':True,
-        'optimize':True,
-        'nm_start':411.27,
-        'nm_end':1004.39,
-        'data_config' : 'Round 1 & 2: peripheral or edemafalse'},
-
-        {'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
-        # 'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
-        'iterations':2,
-        'n_jobs':-1,
+        # {'fracs':1, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
+        {'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
+        'iterations':20,
+        'n_jobs':1,
         'y_col':'Foldername',
         'scale':True,
         'optimize':False,
+        'stochastic':True,
         'nm_start':411.27,
         'nm_end':1004.39,
-        'data_config' : 'Round 1 & 2: peripheral or edemafalse'},
-
-        {'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
-        # 'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
-        'iterations':2,
-        'n_jobs':-1,
-        'y_col':'Foldername',
-        'scale':False,
-        'optimize':True,
-        'nm_start':411.27,
-        'nm_end':1004.39,
-        'data_config' : 'Round 1 & 2: peripheral or edemafalse'},
-
-        {'fracs':0.01, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
-        # 'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
-        'iterations':2,
-        'n_jobs':-1,
-        'y_col':'Foldername',
-        'scale':False,
-        'optimize':False,
-        'nm_start':411.27,
-        'nm_end':1004.39,
-        'data_config' : 'Round 1 & 2: peripheral or edemafalse'}
+        'data_config' : 'Round 1 & 2: cellulitis or edemafalse',
+        'chrom_keys': ['L','M','S'],
+        'd60': True}
     ]
     save_folder = Path(f'/Users/maycaj/Downloads/SpectrumClassifier2 {str(datetime.now().strftime("%Y-%m-%d %H %M"))}')
     with keep.running(on_fail='warn'): # keeps running when lid is shut
