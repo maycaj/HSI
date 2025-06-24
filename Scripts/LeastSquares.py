@@ -256,7 +256,7 @@ if __name__ == '__main__':
         print(f'Done with least squares: {np.round(time.time()-start_ls,1)}s')
 
         # Save the output to a csv file 
-        # df.to_csv('/Users/maycaj/Downloads' + filename + '_LLS.csv', index=False)
+        df.to_csv('/Users/maycaj/Downloads' + filename + '_LLS.csv', index=False)
         # fracPercents.to_csv('/Users/maycaj/Downloads/' + 'LLS_608.82to932.93_' + filename +'.csv', index=False)
 
         print('All done ;)')

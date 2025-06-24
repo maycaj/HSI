@@ -1,3 +1,6 @@
+### Perform the pearson correlation between chromophores and the absolute value of the median of the SVM weights.
+# How to use: add the raw SVM weights from SpectrumClassifier2.py to svm_weights_csv_path and uncomment the chromophores you want to correlate in chromophore_datasets
+
 from scipy.stats import pearsonr
 import pandas as pd
 import numpy as np
@@ -8,7 +11,7 @@ import pathlib as path
  
 #CONFIGURATION
 svm_weights_csv_path = path.PosixPath('/Users/maycaj/Downloads/May28coefs_acc=92_1748823004609_0.1n=43i=10.csv')
-chromophore_datasets = {
+chromophore_datasets = { # Pick which chromophores to correlate with
     'Hb_diff': '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv',
     'Hb_deoxy': '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv',
     'Hb_oxy':'/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv',

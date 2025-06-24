@@ -1,6 +1,5 @@
-#!/Users/maycaj/Documents/HSI_III/.venv/bin/python3
-
 ### Classify each individual pixel from the hyperspectral image using an SVM. The input data is in CSV form. Ouputs are bootstrapped accuracy bar charts and SVM coefficients.
+# How to use: Adjust the parameters_dict list at the end of the script and then run. You can add any number of dictionaries to parameters_dict to run a second model after. 
 
 import numpy as np
 from sklearn.metrics import confusion_matrix
@@ -69,7 +68,7 @@ class DataProcessor:
         '''
         for ID in uniq_ids:
             ID_sum = sum(df['ID'] == ID)
-            print(f'{ID} total: {ID_sum}')
+            # print(f'{ID} total: {ID_sum}')
         true_sum = sum(df[y_col] == y_categories[1])
         false_sum = sum(df[y_col] == y_categories[0])
         print(f'{y_categories[0]} total: {false_sum} | {y_categories[1]} total: {true_sum}')
@@ -269,7 +268,7 @@ class PostProcessor:
         return fig, acc
 
 class SpectrumClassifier:
-    def __init__(self, run_num, save_folder, filepath, fracs, iterations, n_jobs, y_col, scale, optimize, stochastic, nm_start, nm_end, data_config, chrom_keys, d60):
+    def __init__(self, run_num, save_folder, filepath, fracs, iterations, n_jobs, y_col, scale, optimize, stochastic, nm_start, nm_end, data_config, chrom_keys, d65, scrambled_chrom):
         self.run_num = run_num
         self.save_folder = save_folder
         self.filepath = filepath
@@ -284,7 +283,8 @@ class SpectrumClassifier:
         self.nm_end = nm_end
         self.data_config = data_config
         self.chrom_keys = chrom_keys
-        self.d60 = d60
+        self.d65 = d65
+        self.scrambled_chrom = scrambled_chrom
         self.start_time = time.time()
         self.df = DataLoader.load_dataframe(filepath)
 
@@ -322,10 +322,10 @@ class SpectrumClassifier:
         dot_data = { # Name, column key, and filepath of the absorbance data
             'HbO2': ('HbO2 cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv'),
             'Hb': ('Hb cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv'),
-            'H2O': ('H2O 1/cm', '/Users/maycaj/Documents/HSI_III/Absorbances/Water Absorbance.csv'),
-            'Pheomelanin': ('Pheomelanin cm-1/M', '/Users/maycaj/Documents/HSI_III/Absorbances/Pheomelanin.csv'),
-            'Eumelanin': ('Eumelanin cm-1/M', '/Users/maycaj/Documents/HSI_III/Absorbances/Eumelanin Absorbance.csv'),
-            'fat': ('fat', '/Users/maycaj/Documents/HSI_III/Absorbances/Fat Absorbance.csv'),
+            'H2O': ('H2O 1/cm', '/Users/maycaj/Documents/HSI/Absorbances/Water Absorbance.csv'),
+            'Pheomelanin': ('Pheomelanin cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/Pheomelanin.csv'),
+            'Eumelanin': ('Eumelanin cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/Eumelanin Absorbance.csv'),
+            'fat': ('fat', '/Users/maycaj/Documents/HSI/Absorbances/Fat Absorbance.csv'),
             'L': ('L', '/Users/maycaj/Documents/HSI/Absorbances/LM Absorbance.csv'),
             'M': ('M', '/Users/maycaj/Documents/HSI/Absorbances/LM Absorbance.csv'),
             'S': ('S', '/Users/maycaj/Documents/HSI/Absorbances/S Absorbance.csv')
@@ -333,7 +333,7 @@ class SpectrumClassifier:
         if self.chrom_keys is not None:
             for key in self.chrom_keys:
                 chrom_dot_spectra(self.df, [self.nm_start,self.nm_end], dot_data[key][0], key, dot_data[key][1],
-                                   self.d60, normalized=True, plot=False)
+                                   self.d65, self.scrambled_chrom, normalized=True, plot=False)
             self.col_names = self.chrom_keys # replace column names 
         self.TN, self.FP, self.FN, self.TP = 0, 0, 0, 0
         self.uniq_ids = np.sort(self.df['ID'].unique())
@@ -464,9 +464,12 @@ class SpectrumClassifier:
                 'y_col': self.y_col,
                 'scale': self.scale,
                 'optimize': self.optimize,
+                'stochastic': self.stochastic,
                 'nm_start': self.nm_start,
                 'nm_end': self.nm_end,
-                'data_config': self.data_config
+                'data_config': self.data_config,
+                'chrom_keys': self.chrom_keys,
+                'd65': self.d65
             }, f, indent=4)
 
         self.IDaccs.loc['Info', 'Labels'] = f'input filename: {filename}' # add metadata
@@ -492,19 +495,21 @@ class SpectrumClassifier:
 if __name__ == '__main__':
     # Can run several different sets of parameters in sucession 
     paramters_dict = [
-        # {'fracs':1, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv',
-        {'fracs':1 , 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
-        'iterations':20,
-        'n_jobs':1,
-        'y_col':'Foldername',
-        'scale':True,
-        'optimize':False,
-        'stochastic':True,
-        'nm_start':411.27,
-        'nm_end':1004.39,
-        'data_config' : 'Round 1 & 2: cellulitis or edemafalse',
-        'chrom_keys': ['L','M','S'],
-        'd60': True}
+        {'fracs':1, # Fraction of examples to include
+        'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', # filepath of our dataset
+        'iterations':150, # number of iterations to run the model
+        'n_jobs':-1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
+        'y_col':'Foldername', # what column of the data from filepath to fit on
+        'scale':False, # if using StandardScaler() for the SVM
+        'optimize':False, # if optimizing, C, kernel, and gamma 
+        'stochastic':False, # if using stochastic gradient descent (better for larger amounts of data). Else use linear SVM 
+        'nm_start':451.18, # the minimum wavelength to include in model fits
+        'nm_end':954.83, # the maximum wavelength to include in model fits
+        'data_config' :  'Round 1 & 2: cellulitis or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
+        'chrom_keys': ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'], # None if using the camera wavelenbths, else using the dot product of the skin chromophore as the features to fit on. See the keys of dot_data for chromophore options.
+        'd65': False, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys
+        'scrambled_chrom': True}, # If scrambling the chromophores to be the same size but completely random
+
     ]
     save_folder = Path(f'/Users/maycaj/Downloads/SpectrumClassifier2 {str(datetime.now().strftime("%Y-%m-%d %H %M"))}')
     with keep.running(on_fail='warn'): # keeps running when lid is shut
