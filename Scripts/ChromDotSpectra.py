@@ -30,7 +30,7 @@ def load_and_interpolate(file_path, wavelength_column, value_column, x_interp):
     y_abs = csv_data[value_column].values
     y_abs = y_abs / max(y_abs) # Scale from 0 to 1
     y_interp = np.interp(x_interp, x_abs, y_abs)
-    if max(y_interp) != 0:
+    if max(y_interp) != 0: 
         y_interp = y_interp / max(y_interp)
     return x_interp, y_interp, x_abs, y_abs
 
@@ -58,8 +58,14 @@ def chrom_dot_spectra(data, nmStartEnd, spectraName, outputName, absorbPath, d60
     
     x_interp, y_interp_chrom, x_abs, y_abs = load_and_interpolate(absorbPath,'lambda nm',spectraName,dot_waves)
 
+    if normalized: #normalize so that the AUC is consistent across each chromophore. Normalization does not matter at all if you are using StandardScaler()
+        y_interp_area = np.trapezoid(y_interp_chrom)
+        y_interp_chrom = y_interp_chrom / y_interp_area
+
     if scrambled_chrom: # if chromophores need to be scrambled
-        y_interp_chrom = np.random.rand(np.size(y_interp_chrom))
+        # y_interp_chrom = np.random.rand(np.size(y_interp_chrom)) # Completely random values
+        np.random.shuffle(y_interp_chrom) # Randomized order of chromophore only
+
 
     if plot:
         fig1 = go.Figure()
@@ -81,36 +87,54 @@ def chrom_dot_spectra(data, nmStartEnd, spectraName, outputName, absorbPath, d60
     data[outputName] = np.dot(data_selected, y_interp_chrom)
 
     # Normalize output
-    if normalized: 
+    # if normalized: 
         # data[outputName] = data[outputName] - data[outputName].min() + 0.01 # Doing this gets rid of a lot of the ability to segment the veins and also messed with decoding accuracy. It is also not realistic because there is still absorbance occuring even at the raw data's lowest point.
-        data[outputName] = data[outputName] / data[outputName].max()
-
+        # data[outputName] = data[outputName] / data[outputName].max() # Normalizing here is a data leak because it is before the train_test_split
     return y_interp_chrom
 
 if __name__ == '__main__':
     ### Plot the L, M, and S absorbances pre and post interpolation next to d65
 
-    chrom_keys = ['L','M','S','D65']
-
     dot_data = { # Name, column key, and filepath of the absorbance data
     'HbO2': ('HbO2 cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv'),
     'Hb': ('Hb cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv'),
-    'H2O': ('H2O 1/cm', '/Users/maycaj/Documents/HSI_III/Absorbances/Water Absorbance.csv'),
-    'Pheomelanin': ('Pheomelanin cm-1/M', '/Users/maycaj/Documents/HSI_III/Absorbances/Pheomelanin.csv'),
-    'Eumelanin': ('Eumelanin cm-1/M', '/Users/maycaj/Documents/HSI_III/Absorbances/Eumelanin Absorbance.csv'),
-    'fat': ('fat', '/Users/maycaj/Documents/HSI_III/Absorbances/Fat Absorbance.csv'),
-    'L': ('L', '/Users/maycaj/Documents/HSI/Absorbances/LM Absorbance.csv'),
-    'M': ('M', '/Users/maycaj/Documents/HSI/Absorbances/LM Absorbance.csv'),
-    'S': ('S', '/Users/maycaj/Documents/HSI/Absorbances/S Absorbance.csv'),
-    'D65': ('D65', '/Users/maycaj/Documents/HSI/Absorbances/CIE_std_illum_D65.csv'),
+    'H2O': ('H2O 1/cm', '/Users/maycaj/Documents/HSI/Absorbances/Water Absorbance.csv'),
+    'Pheomelanin': ('Pheomelanin cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/Pheomelanin.csv'),
+    'Eumelanin': ('Eumelanin cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/Eumelanin Absorbance.csv'),
+    'fat': ('fat', '/Users/maycaj/Documents/HSI/Absorbances/Fat Absorbance.csv'),
+    # 'L': ('L', '/Users/maycaj/Documents/HSI/Absorbances/LM Absorbance.csv'),
+    # 'M': ('M', '/Users/maycaj/Documents/HSI/Absorbances/LM Absorbance.csv'),
+    # 'S': ('S', '/Users/maycaj/Documents/HSI/Absorbances/S Absorbance.csv'),
+    # 'D65': ('D65', '/Users/maycaj/Documents/HSI/Absorbances/CIE_std_illum_D65.csv'),
     }
+
+    chrom_keys = list(dot_data.keys()) # plotting all of the chromophores
+
+    nmStart = 400
+    nmEnd = 1000
+
     if chrom_keys is not None:
         fig = go.Figure()
         for chrom_key in chrom_keys:
             absorbPath = dot_data[chrom_key][1]
             value_column = dot_data[chrom_key][0]
-            x_interp = pd.read_csv(absorbPath)['lambda nm']
-            x_interp, y_interp_chrom, x_abs, y_abs = load_and_interpolate(absorbPath,'lambda nm',value_column, x_interp)
-            fig.add_trace(go.Scatter(x=x_abs, y=y_abs, name=f'Original: {chrom_key}'))
-            fig.add_trace(go.Scatter(x=x_interp, y=y_interp_chrom, name=f'Interpolated: {chrom_key}'))
+            absob_csv = pd.read_csv(absorbPath)
+            x = absob_csv['lambda nm'].values
+            mask = (x >= nmStart) & (x <= nmEnd)
+            x = x[mask]
+            y = absob_csv[value_column].values
+            y = y[mask]
+            y = y / np.max(y)
+            fig.add_trace(go.Scatter(x=x, y=y, name=f'{chrom_key}', mode='lines'))
+        fig.update_layout(title='Chromophores',
+                        xaxis_title='Wavelength (nm)',
+                        yaxis_title='Absorbance',
+                        yaxis_type = 'log',
+                        xaxis_showgrid=False,
+                        yaxis_showgrid=False,
+                        plot_bgcolor='white',   # Set plot area background to white
+                        )
+        fig.update_yaxes(
+            tickvals=[1e-4, 1e-3, 1e-2, 1e-1, 1, 10])  # Only show ticks at powers of 10
+        fig.write_image("/Users/maycaj/Downloads/chromophores_plot.pdf")  # Save as PDF
         fig.show()

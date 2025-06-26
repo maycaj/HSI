@@ -11,16 +11,15 @@ from sklearn.model_selection import KFold, GridSearchCV
 import time
 from joblib import Parallel, delayed
 import pyarrow.csv as pv
-from ChromDotSpectra import chrom_dot_spectra # Make sure you have ChromDotSpectra.py in the same directory
 from datetime import datetime
 import sys
-import os
 from pathlib import Path
 import shutil
 import json  # Add this import for saving parameters as JSON or text
 from wakepy import keep
 from sklearn.linear_model import SGDClassifier
 import gc
+import plotly.graph_objects as go
 
 class DataLoader:
     @staticmethod
@@ -39,6 +38,95 @@ class DataLoader:
         df = pd.read_csv(filepath)
         print(f'Done loading dataframe ({np.round(time.time()-start_time,1)}s)')
         return df 
+    
+class ChromDotSpectra:
+    @staticmethod
+    def load_and_interpolate(file_path, wavelength_column, value_column, x_interp):
+        """
+        Load a CSV file and interpolate the values based on the given wavelength column and value column.
+        
+        Parameters:
+            file_path (str): Path to the CSV file.
+            wavelength_column (str): Column name for wavelengths.
+            value_column (str): Column name for the values to interpolate.
+            x_interp (array-like): Wavelengths to interpolate to.
+        
+        Returns:
+            x_interp: wavelength values that correspond with y_interp
+            y_interp: yAbs values interpolated to match with the x_interp
+            x_abs: x original absorbance values (wavelength in nm)
+            y_abs: y original absorbance values 
+            range: [min_x_abs, max_x_abs]
+        """
+        csv_data = pd.read_csv(file_path)
+        if not csv_data[wavelength_column].is_monotonic_increasing:
+            csv_data = csv_data.sort_values(by=wavelength_column)
+        x_abs = csv_data[wavelength_column].values
+        y_abs = csv_data[value_column].values
+        y_abs = y_abs / max(y_abs) # Scale from 0 to 1
+        y_interp = np.interp(x_interp, x_abs, y_abs)
+        if max(y_interp) != 0: 
+            y_interp = y_interp / max(y_interp)
+        return x_interp, y_interp, x_abs, y_abs
+
+    @staticmethod
+    def chrom_dot_spectra(data, nmStartEnd, spectraName, outputName, absorbPath, d60=True, scrambled_chrom=False, normalized=True, plot=True):
+        '''
+        Takes dataframe and performs dot product with Hemoglobin's response curve to see the total absorbance of hemoglobin in the skin.
+        Args:
+            data: main pandas dataframe with wavelength and demographic data
+            nmStartEnd: [startingWavelength, endingWavelength] in data
+            spectraName: Name of column in the absorbance csv
+            absorbPath: path to .csv with the absorbances
+            d60 (bool): if combining the spectra with the daylight axis
+            normalized (bool): if dividing the resultant output by its max such that the highest number is 1
+            plot (bool): if plotting
+        '''
+        skin_waves = list(data.loc[:,nmStartEnd[0]:nmStartEnd[1]].columns) # find the wavelengths captured by camera
+
+        # find the wavelengths where the skin wavelengths, absorbance wavelengths, and (if applicable) d60 wavelengths overlap
+        x_abs = pd.read_csv(absorbPath)['lambda nm'].values
+        dot_waves = [col for col in skin_waves if (col >= min(x_abs)) & (col <= max(x_abs))]
+        d60_path = '/Users/maycaj/Documents/HSI/Absorbances/CIE_std_illum_D65.csv'
+        if d60: # if d60, ensure that the wavelengths are within the range of d60
+            x_abs_d60 = pd.read_csv(d60_path)['lambda nm'].values
+            dot_waves = [col for col in dot_waves if (col >= min(x_abs_d60)) & (col <= max(x_abs_d60))]
+        
+        x_interp, y_interp_chrom, x_abs, y_abs = ChromDotSpectra.load_and_interpolate(absorbPath,'lambda nm',spectraName,dot_waves)
+
+        if normalized: #normalize so that the AUC is consistent across each chromophore. Normalization does not matter at all if you are using StandardScaler()
+            y_interp_area = np.trapezoid(y_interp_chrom)
+            y_interp_chrom = y_interp_chrom / y_interp_area
+
+        if scrambled_chrom: # if chromophores need to be scrambled
+            # y_interp_chrom = np.random.rand(np.size(y_interp_chrom)) # Completely random values
+            np.random.shuffle(y_interp_chrom) # Randomized order of chromophore only
+
+
+        if plot:
+            fig1 = go.Figure()
+            fig1.add_trace(go.Scatter(x=x_interp, y=y_interp_chrom, name=f'Interp {spectraName}'))
+            fig1.add_trace(go.Scatter(x=x_abs, y=y_abs, name=f'Original {spectraName}'))
+            fig1.show()
+
+        # find wavelengths that are in range for both the chromophores and the skin
+        data_selected = data.loc[:,dot_waves].values
+        if d60: # multiply by daylight axis
+            x_interp, y_interp_d60, x_abs_d60, y_abs_d60 = ChromDotSpectra.load_and_interpolate(d60_path,'lambda nm','D65',dot_waves)
+            if plot:
+                fig1.add_trace(go.Scatter(x=x_interp, y=y_interp_d60, name=f'Interp d60'))
+                fig1.add_trace(go.Scatter(x=x_abs_d60, y=y_abs_d60, name=f'Original d60'))
+                fig1.show()
+            data_selected = data_selected * y_interp_d60 
+        data_selected = np.where(data_selected == 0, 1e-10, data_selected) # Ensure there is no divide by zero error in next step
+        data_selected = np.log10(1 / data_selected) # Absorbance = log10(1 / reflectance)
+        data[outputName] = np.dot(data_selected, y_interp_chrom)
+
+        # Normalize output
+        # if normalized: 
+            # data[outputName] = data[outputName] - data[outputName].min() + 0.01 # Doing this gets rid of a lot of the ability to segment the veins and also messed with decoding accuracy. It is also not realistic because there is still absorbance occuring even at the raw data's lowest point.
+            # data[outputName] = data[outputName] / data[outputName].max() # Normalizing here is a data leak because it is before the train_test_split
+        return y_interp_chrom
 
 class DataProcessor:
     @staticmethod
@@ -65,116 +153,18 @@ class DataProcessor:
         Prints out the sums of the weights and the sums of the samples by Id and by T/F
         Args: 
             df: dataframe 
+            uniq_ids: unique IDs in our dataset
+            y_col: the column we are fitting on
+            y_categories: the binary categories that we are fitting on
         '''
-        for ID in uniq_ids:
-            ID_sum = sum(df['ID'] == ID)
+        # for ID in uniq_ids:
+        #     ID_sum = sum(df['ID'] == ID)
             # print(f'{ID} total: {ID_sum}')
         true_sum = sum(df[y_col] == y_categories[1])
         false_sum = sum(df[y_col] == y_categories[0])
         print(f'{y_categories[0]} total: {false_sum} | {y_categories[1]} total: {true_sum}')
 
-class ModelTrainer:
-    @staticmethod
-    def optimize_hyperparameters(X_train, y_train):
-        '''
-        Optimizes hyperparameters for the SVM classifier using GridSearchCV.
-        Args:
-            X_train: Training features
-            y_train: Training labels
-        Returns:
-            best_params: Best hyperparameters found
-        '''
-        param_grid = {
-            'C': [0.1, 1, 10, 100],
-            'kernel': ['linear', 'rbf'],
-            'gamma': ['scale', 'auto']
-        }
-        grid_search = GridSearchCV(SVC(), param_grid, cv=3, scoring='accuracy', n_jobs=-1)
-        grid_search.fit(X_train, y_train)
-        print(f"Best parameters: {grid_search.best_params_}")
-        return grid_search.best_params_
 
-    @staticmethod
-    def process_fold(fold_num, train_index, test_index, i, uniq_ids, data_frac, y_categories, y_col, col_names, scale, optimize, stochastic, random_state):
-        '''
-        Processes each fold of the data. Is wrapped into a function so that each fold can be parallelized
-        Args:
-            fold_num: what number fold we are on
-            train_index: index of the training examples
-            test_index: index of the testing index
-            i: what number iteration we are on
-        
-        Returns: 
-            confusionFold: confusion matricies for this fold
-            PredLocFold: predictions and their locations for this fold
-            IDaccFold: ID accuracies for this fold
-            coefFold: SVM coefficients for this fold
-        '''
-        train_ids = uniq_ids[train_index]
-        test_ids = uniq_ids[test_index]
-        print(f'Fold {fold_num} Train IDs: {train_ids}')
-        print(f'Fold {fold_num} Test IDs: {test_ids}')
-        train = data_frac[data_frac['ID'].isin(train_ids)]
-        test = data_frac[data_frac['ID'].isin(test_ids)].copy()
-        train = DataProcessor.undersample_class(train, y_categories, y_col, random_state)
-
-        DataProcessor.summarize_data(train, uniq_ids, y_col, y_categories)
-
-        X_train = train.loc[:, col_names] 
-        y_train = train[y_col]
-        X_test = test.loc[:, col_names]
-        y_test = test[y_col]
-
-        if optimize: 
-            svc_params = ModelTrainer.optimize_hyperparameters(X_train, y_train)
-            svm = SVC(**svc_params)
-        else:
-            if stochastic:
-                svm = SGDClassifier(loss='hinge', max_iter=1000, tol=1e-3)
-            else:
-                svm = SVC(kernel='linear')
-
-        if scale:
-            scaler = StandardScaler()
-            X_train = scaler.fit_transform(X_train)
-        svm.fit(X_train, y_train)
-
-        if scale:
-            X_test = scaler.transform(X_test)
-        y_pred = svm.predict(X_test)
-
-        if optimize:
-            if svc_params['kernel'] == 'linear':
-                coef_fold = pd.DataFrame(svm.coef_[0].reshape(1, -1), columns=col_names)
-            elif svc_params['kernel'] == 'rbf':
-                coef_fold = pd.DataFrame(np.zeros((1, len(col_names))), columns=col_names)
-        else:
-            coef_fold = pd.DataFrame(svm.coef_[0].reshape(1, -1), columns=col_names)
-
-        test.loc[:, 'correct'] = y_test == y_pred
-        test.loc[:, 'yPred'] = y_pred
-        test.loc[:, 'yTest'] = y_test
-
-        confusion_fold = pd.DataFrame([])
-        uniq_test_ids = test['ID'].unique()
-        for ID in uniq_test_ids:
-            test_id = test[(test['ID'] == ID)] 
-            if not test_id.empty:
-                cm = confusion_matrix(test_id['yTest'], test_id['yPred'], labels=y_categories)
-                if cm.size != 1:
-                    TP, FN, FP, TN = cm.ravel()
-                    confusion_fold = pd.concat([confusion_fold, pd.DataFrame([[fold_num, ID, TN, FP, FN, TP]], columns=['foldNum', 'ID', 'TN', 'FP', 'FN', 'TP'])])
-
-        pred_loc_fold = test[['ID', 'yPred', 'FloatName', 'correct', y_col]].copy()
-        pred_loc_fold['foldNum'] = fold_num
-
-        print(f'Patch Acc Fold {fold_num} iteration {i}: {np.mean(test["correct"])}')
-
-        ID_acc_fold = test.groupby(['ID', y_col])['correct'].mean()
-        ID_acc_fold = ID_acc_fold.to_frame(name=f'Iter {i} Fold {fold_num}')
-        ID_acc_fold.reset_index(inplace=True)
-
-        return confusion_fold, pred_loc_fold, ID_acc_fold, coef_fold
 
 class PostProcessor:
     @staticmethod
@@ -279,7 +269,7 @@ class SpectrumClassifier:
         self.scale = scale
         self.optimize = optimize
         self.stochastic = stochastic
-        self.nm_start = nm_start
+        self.nm_start = nm_start # ___ round to closest camera wavekength 
         self.nm_end = nm_end
         self.data_config = data_config
         self.chrom_keys = chrom_keys
@@ -291,8 +281,6 @@ class SpectrumClassifier:
     def process_data(self):
         '''
         Processes the data, applies configurations, and prepares for training
-        Args:
-            chrom_keys: chromophore keys to be fit on. If not none, chrom_keys are fit on instead of the wavelength columns.
         '''
         print('Selecting IDs')
         data_config = self.data_config
@@ -306,6 +294,12 @@ class SpectrumClassifier:
         self.df = self.df[self.df['ID'] != 0] # Remove Dr. Pare
         self.n_splits = len(self.df['ID'].unique()) # Make the number of splits be the same as the number of IDs (patients)
 
+        # map the wavelengths to the closest camera wavelength
+        camera_nm = [376.61, 381.55, 386.49, 391.43, 396.39, 401.34, 406.3, 411.27, 416.24, 421.22, 426.2, 431.19, 436.18, 441.17, 446.17, 451.18, 456.19, 461.21, 466.23, 471.25, 476.28, 481.32, 486.36, 491.41, 496.46, 501.51, 506.57, 511.64, 516.71, 521.78, 526.86, 531.95, 537.04, 542.13, 547.23, 552.34, 557.45, 562.57, 567.69, 572.81, 577.94, 583.07, 588.21, 593.36, 598.51, 603.66, 608.82, 613.99, 619.16, 624.33, 629.51, 634.7, 639.88, 645.08, 650.28, 655.48, 660.69, 665.91, 671.13, 676.35, 681.58, 686.81, 692.05, 697.29, 702.54, 707.8, 713.06, 718.32, 723.59, 728.86, 734.14, 739.42, 744.71, 750.01, 755.3, 760.61, 765.92, 771.23, 776.55, 781.87, 787.2, 792.53, 797.87, 803.21, 808.56, 813.91, 819.27, 824.63, 830.0, 835.37, 840.75, 846.13, 851.52, 856.91, 862.31, 867.71, 873.12, 878.53, 883.95, 889.37, 894.8, 900.23, 905.67, 911.11, 916.56, 922.01, 927.47, 932.93, 938.4, 943.87, 949.35, 954.83, 960.31, 965.81, 971.3, 976.8, 982.31, 987.82, 993.34, 998.86, 1004.39, 1009.92, 1015.45, 1020.99, 1026.54, 1032.09, 1037.65, 1043.21]
+        self.nm_start = min(camera_nm, key = lambda x: abs(x - self.nm_start))
+        self.nm_end = min(camera_nm, key = lambda x: abs(x-self.nm_end))
+
+        # Find the columns used for training 
         self.df.rename( # rename all of the 'Wavelength_' columns to be numberical floats
             columns={col: float(col.split('Wavelength_')[1])
                 for col in self.df.columns if col.startswith('Wavelength_')
@@ -316,7 +310,24 @@ class SpectrumClassifier:
         # self.col_names = [float(col.split('Wavelength_')[1]) for col in self.col_names] 
         # self.col_names = [col for col in self.col_names if (float(col.split('_')[1]) >= self.nm_start) & (float(col.split('_')[1]) <= self.nm_end)]
 
+        # Initialize dataframes for data processing
+        self.PredLocs = pd.DataFrame([])
+        self.coefs = pd.DataFrame([])
+        self.selected_num = int(self.fracs * self.df.shape[0])
         self.y_categories = self.df[self.y_col].unique()
+        self.confusions = pd.DataFrame(columns=['ID', 'TN', 'FP', 'FN', 'TP'])
+        self.TN, self.FP, self.FN, self.TP = 0, 0, 0, 0
+        self.uniq_ids = np.sort(self.df['ID'].unique())
+
+        # Do dot product if there are chromophores in chrom_keys
+        self.dot_product()
+
+    def dot_product(self):
+        '''
+        Takes the dot product of the spectra with the relevant chromophores. Adds columns to df defined by chrom_keys.
+        Args:
+            chrom_keys: chromophore keys to be fit on. If not none, chrom_keys are fit on instead of the wavelength columns.
+        '''
         print('Performing dot product')
         # nm_start_end_str = ['Wavelength_' + str(self.nm_start), 'Wavelength_' + str(self.nm_end)]
         dot_data = { # Name, column key, and filepath of the absorbance data
@@ -332,37 +343,144 @@ class SpectrumClassifier:
         }
         if self.chrom_keys is not None:
             for key in self.chrom_keys:
-                chrom_dot_spectra(self.df, [self.nm_start,self.nm_end], dot_data[key][0], key, dot_data[key][1],
-                                   self.d65, self.scrambled_chrom, normalized=True, plot=False)
+                ChromDotSpectra.chrom_dot_spectra(self.df, [self.nm_start,self.nm_end], dot_data[key][0], key, dot_data[key][1],
+                                   self.d65, self.scrambled_chrom, normalized=False, plot=False)
             self.col_names = self.chrom_keys # replace column names 
-        self.TN, self.FP, self.FN, self.TP = 0, 0, 0, 0
-        self.uniq_ids = np.sort(self.df['ID'].unique())
 
-        # Initialize dataframes for data processing
-        self.PredLocs = pd.DataFrame([])
-        self.coefs = pd.DataFrame([])
-        self.confusions = pd.DataFrame(columns=['ID', 'TN', 'FP', 'FN', 'TP'])
-        self.selected_num = int(self.fracs * self.df.shape[0])
+    @staticmethod
+    def optimize_hyperparameters(X_train, y_train):
+        '''
+        Optimizes hyperparameters for the SVM classifier using GridSearchCV.
+        Args:
+            X_train: Training features
+            y_train: Training labels
+        Returns:
+            best_params: Best hyperparameters found
+        '''
+        param_grid = {
+            'C': [0.1, 1, 10, 100],
+            'kernel': ['linear', 'rbf'],
+            'gamma': ['scale', 'auto']
+        }
+        grid_search = GridSearchCV(SVC(), param_grid, cv=3, scoring='accuracy', n_jobs=-1)
+        grid_search.fit(X_train, y_train)
+        print(f"Best parameters: {grid_search.best_params_}")
+        return grid_search.best_params_
+
+    def process_fold(self, fold_num, train_index, test_index, i, uniq_ids, data_frac, y_categories, y_col, col_names, scale, optimize, stochastic, random_state):
+        '''
+        Processes each fold of the data. Is wrapped into a function so that each fold can be parallelized
+        Args:
+            fold_num: what number fold we are on
+            train_index: index of the training examples
+            test_index: index of the testing index
+            i: what number iteration we are on
+        
+        Returns: 
+            confusionFold: confusion matricies for this fold
+            PredLocFold: predictions and their locations for this fold
+            IDaccFold: ID accuracies for this fold
+            coefFold: SVM coefficients for this fold
+        '''
+        # Rescramble the chromophores every fold if we are scrambling 
+        if self.scrambled_chrom:
+            self.dot_product() 
+
+        ## Select data to train on
+        train_ids = uniq_ids[train_index]
+        test_ids = uniq_ids[test_index]
+        print(f'Fold {fold_num} Train IDs: {train_ids}')
+        print(f'Fold {fold_num} Test IDs: {test_ids}')
+        train = data_frac[data_frac['ID'].isin(train_ids)]
+        test = data_frac[data_frac['ID'].isin(test_ids)].copy()
+        train = DataProcessor.undersample_class(train, y_categories, y_col, random_state)
+
+        DataProcessor.summarize_data(train, uniq_ids, y_col, y_categories)
+
+        X_train = train.loc[:, col_names] 
+        y_train = train[y_col]
+        X_test = test.loc[:, col_names]
+        y_test = test[y_col]
+
+        ## Optimize and fit model
+        if optimize: 
+            svc_params = self.optimize_hyperparameters(X_train, y_train)
+            svm = SVC(**svc_params)
+        else:
+            if stochastic: 
+                svm = SGDClassifier(loss='hinge', max_iter=1000, tol=1e-3)
+            else:
+                svm = SVC(kernel='linear')
+
+        if scale:
+            scaler = StandardScaler()
+            X_train = scaler.fit_transform(X_train)
+        svm.fit(X_train, y_train)
+
+        if scale:
+            X_test = scaler.transform(X_test)
+        y_pred = svm.predict(X_test)
+
+        if optimize:
+            if svc_params['kernel'] == 'linear':
+                coef_fold = pd.DataFrame(svm.coef_[0].reshape(1, -1), columns=col_names)
+            elif svc_params['kernel'] == 'rbf':
+                coef_fold = pd.DataFrame(np.zeros((1, len(col_names))), columns=col_names)
+        else:
+            coef_fold = pd.DataFrame(svm.coef_[0].reshape(1, -1), columns=col_names)
+
+
+        test.loc[:, 'correct'] = y_test == y_pred
+        test.loc[:, 'yPred'] = y_pred
+        test.loc[:, 'yTest'] = y_test
+
+        ## Process the confusion matricies 
+        confusion_fold = pd.DataFrame([])
+        uniq_test_ids = test['ID'].unique()
+        for ID in uniq_test_ids:
+            test_id = test[(test['ID'] == ID)] 
+            if not test_id.empty:
+                cm = confusion_matrix(test_id['yTest'], test_id['yPred'], labels=y_categories)
+                if cm.size != 1:
+                    TP, FN, FP, TN = cm.ravel()
+                    confusion_fold = pd.concat([confusion_fold, pd.DataFrame([[fold_num, ID, TN, FP, FN, TP]], columns=['foldNum', 'ID', 'TN', 'FP', 'FN', 'TP'])])
+
+        ## Save the predictions for each fold
+        pred_loc_fold = test[['ID', 'yPred', 'FloatName', 'correct', y_col]].copy()
+        pred_loc_fold['foldNum'] = fold_num
+
+        print(f'Patch Acc Fold {fold_num} iteration {i}: {np.mean(test["correct"])}')
+
+        ## Make the ID_acc dataframe for this fold 
+        ID_acc_fold = test.groupby(['ID', y_col])['correct'].mean()
+        ID_acc_fold = ID_acc_fold.to_frame(name=f'Iter {i} Fold {fold_num}')
+        ID_acc_fold.reset_index(inplace=True)
+
+        return confusion_fold, pred_loc_fold, ID_acc_fold, coef_fold
 
     def train_and_evaluate(self):
         '''
         Trains the model and evaluates it using cross-validation
         '''
         for i in range(self.iterations):
-            print(f'Starting iteration: {i}')
+            print(f'\n\n-------Starting iteration: {i} -------\n')
             random_state = np.random.randint(0, 4294967295)
-            data_frac = self.df.sample(n=self.selected_num, random_state=random_state) # sample a subset of df
+
+            # sample a subset of df and split into folds
+            data_frac = self.df.sample(n=self.selected_num, random_state=random_state) 
             while  not np.array_equal(self.uniq_ids, np.sort(data_frac['ID'].unique())): # Resample if the fraction has zero examples for any class
                 data_frac = self.df.sample(n=self.selected_num, random_state=random_state)
             kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=random_state)
-            fold_output = Parallel(n_jobs=self.n_jobs)( # process each fold in parallel
-                delayed(ModelTrainer.process_fold)(fold_num, train_index, test_index, i, self.uniq_ids, data_frac, 
+
+            # process each fold in parallel
+            fold_output = Parallel(n_jobs=self.n_jobs)( 
+                delayed(self.process_fold)(fold_num, train_index, test_index, i, self.uniq_ids, data_frac, 
                                                    self.y_categories, self.y_col, self.col_names, self.scale, 
                                                    self.optimize, self.stochastic, random_state)
                 for fold_num, (train_index, test_index) in enumerate(kf.split(self.uniq_ids))
             )
 
-            # joblib requires concatenation of the outputs 
+            # joblib's Parrallel function (used for parallelization of fold processing) requires concatenation of the outputs 
             confusion_fold, pred_loc_fold, ID_acc_fold, coef_fold = zip(*fold_output)
             confusion_fold = pd.concat(confusion_fold, ignore_index=True)
             pred_loc_fold = pd.concat(pred_loc_fold, ignore_index=True)
@@ -454,23 +572,7 @@ class SpectrumClassifier:
         # Save parameters as a .txt file
         parameters_file = folder / 'parameters.txt'
         with open(parameters_file, 'w') as f:
-            json.dump({
-                'run_num': self.run_num,
-                'save_folder': str(self.save_folder),
-                'filepath': self.filepath,
-                'fracs': self.fracs,
-                'iterations': self.iterations,
-                'n_jobs': self.n_jobs,
-                'y_col': self.y_col,
-                'scale': self.scale,
-                'optimize': self.optimize,
-                'stochastic': self.stochastic,
-                'nm_start': self.nm_start,
-                'nm_end': self.nm_end,
-                'data_config': self.data_config,
-                'chrom_keys': self.chrom_keys,
-                'd65': self.d65
-            }, f, indent=4)
+            json.dump(parameters_dict[run_num], f, indent=4)
 
         self.IDaccs.loc['Info', 'Labels'] = f'input filename: {filename}' # add metadata
         # IDaccs.to_csv(f'/Users/maycaj/Downloads/{date}IDaccs_n={selectedNum}i={iterations}.csv') # Save the accuracy as csv
@@ -494,26 +596,126 @@ class SpectrumClassifier:
 
 if __name__ == '__main__':
     # Can run several different sets of parameters in sucession 
-    paramters_dict = [
-        {'fracs':1, # Fraction of examples to include
-        'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', # filepath of our dataset
-        'iterations':150, # number of iterations to run the model
+    parameters_dict = [
+        {
+        # 'fracs':0.01, # Fraction of examples to include
+        # 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv', # filepath of our dataset
+        'fracs': 1, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', 
+        'iterations':10, # number of iterations to run the model
         'n_jobs':-1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
         'y_col':'Foldername', # what column of the data from filepath to fit on
-        'scale':False, # if using StandardScaler() for the SVM
+        'scale':True, # if using StandardScaler() for the SVM
         'optimize':False, # if optimizing, C, kernel, and gamma 
         'stochastic':False, # if using stochastic gradient descent (better for larger amounts of data). Else use linear SVM 
-        'nm_start':451.18, # the minimum wavelength to include in model fits
-        'nm_end':954.83, # the maximum wavelength to include in model fits
-        'data_config' :  'Round 1 & 2: cellulitis or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
-        'chrom_keys': ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'], # None if using the camera wavelenbths, else using the dot product of the skin chromophore as the features to fit on. See the keys of dot_data for chromophore options.
+        'nm_start':451.18, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
+        'nm_end':954.83, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
+        'data_config' : 'Round 1 & 2: cellulitis or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
+        'chrom_keys': ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat'], # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
         'd65': False, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys
         'scrambled_chrom': True}, # If scrambling the chromophores to be the same size but completely random
-
     ]
+
+    # parameters_dict = [
+    #     {'fracs':0.01, # Fraction of examples to include
+    #     'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv', # filepath of our dataset
+    #     # 'fracs': 1, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', 
+    #     'iterations':3, # number of iterations to run the model
+    #     'n_jobs':-1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
+    #     'y_col':'Foldername', # what column of the data from filepath to fit on
+    #     'scale':True, # if using StandardScaler() for the SVM
+    #     'optimize':False, # if optimizing, C, kernel, and gamma 
+    #     'stochastic':False, # if using stochastic gradient descent (better for larger amounts of data). Else use linear SVM 
+    #     'nm_start':451.18, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
+    #     'nm_end':954.83, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
+    #     'data_config' : 'Round 1 & 2: cellulitis or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
+    #     'chrom_keys': ['HbO2'], # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
+    #     'd65': False, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys
+    #     'scrambled_chrom': True}, # If scrambling the chromophores to be the same size but completely random
+
+    #     {'fracs':0.01, # Fraction of examples to include
+    #     'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv', # filepath of our dataset
+    #     # 'fracs': 1, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', 
+    #     'iterations':3, # number of iterations to run the model
+    #     'n_jobs':-1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
+    #     'y_col':'Foldername', # what column of the data from filepath to fit on
+    #     'scale':True, # if using StandardScaler() for the SVM
+    #     'optimize':False, # if optimizing, C, kernel, and gamma 
+    #     'stochastic':False, # if using stochastic gradient descent (better for larger amounts of data). Else use linear SVM 
+    #     'nm_start':451.18, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
+    #     'nm_end':954.83, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
+    #     'data_config' : 'Round 1 & 2: cellulitis or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
+    #     'chrom_keys': ['Hb'], # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
+    #     'd65': False, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys
+    #     'scrambled_chrom': True}, # If scrambling the chromophores to be the same size but completely random
+
+    #     {'fracs':0.01, # Fraction of examples to include
+    #     'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv', # filepath of our dataset
+    #     # 'fracs': 1, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', 
+    #     'iterations':3, # number of iterations to run the model
+    #     'n_jobs':-1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
+    #     'y_col':'Foldername', # what column of the data from filepath to fit on
+    #     'scale':True, # if using StandardScaler() for the SVM
+    #     'optimize':False, # if optimizing, C, kernel, and gamma 
+    #     'stochastic':False, # if using stochastic gradient descent (better for larger amounts of data). Else use linear SVM 
+    #     'nm_start':451.18, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
+    #     'nm_end':954.83, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
+    #     'data_config' : 'Round 1 & 2: cellulitis or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
+    #     'chrom_keys': ['H2O'], # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
+    #     'd65': False, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys
+    #     'scrambled_chrom': True}, # If scrambling the chromophores to be the same size but completely random
+
+    #     {'fracs':0.01, # Fraction of examples to include
+    #     'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv', # filepath of our dataset
+    #     # 'fracs': 1, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', 
+    #     'iterations':3, # number of iterations to run the model
+    #     'n_jobs':-1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
+    #     'y_col':'Foldername', # what column of the data from filepath to fit on
+    #     'scale':True, # if using StandardScaler() for the SVM
+    #     'optimize':False, # if optimizing, C, kernel, and gamma 
+    #     'stochastic':False, # if using stochastic gradient descent (better for larger amounts of data). Else use linear SVM 
+    #     'nm_start':451.18, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
+    #     'nm_end':954.83, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
+    #     'data_config' : 'Round 1 & 2: cellulitis or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
+    #     'chrom_keys': ['Pheomelanin'], # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
+    #     'd65': False, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys
+    #     'scrambled_chrom': True}, # If scrambling the chromophores to be the same size but completely random
+
+    #     {'fracs':0.01, # Fraction of examples to include
+    #     'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv', # filepath of our dataset
+    #     # 'fracs': 1, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', 
+    #     'iterations':3, # number of iterations to run the model
+    #     'n_jobs':-1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
+    #     'y_col':'Foldername', # what column of the data from filepath to fit on
+    #     'scale':True, # if using StandardScaler() for the SVM
+    #     'optimize':False, # if optimizing, C, kernel, and gamma 
+    #     'stochastic':False, # if using stochastic gradient descent (better for larger amounts of data). Else use linear SVM 
+    #     'nm_start':451.18, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
+    #     'nm_end':954.83, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
+    #     'data_config' : 'Round 1 & 2: cellulitis or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
+    #     'chrom_keys': ['Eumelanin', 'fat'], # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
+    #     'd65': False, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys
+    #     'scrambled_chrom': True}, # If scrambling the chromophores to be the same size but completely random
+
+    #     {'fracs':0.01, # Fraction of examples to include
+    #     'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv', # filepath of our dataset
+    #     # 'fracs': 1, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', 
+    #     'iterations':3, # number of iterations to run the model
+    #     'n_jobs':-1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
+    #     'y_col':'Foldername', # what column of the data from filepath to fit on
+    #     'scale':True, # if using StandardScaler() for the SVM
+    #     'optimize':False, # if optimizing, C, kernel, and gamma 
+    #     'stochastic':False, # if using stochastic gradient descent (better for larger amounts of data). Else use linear SVM 
+    #     'nm_start':451.18, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
+    #     'nm_end':954.83, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
+    #     'data_config' : 'Round 1 & 2: cellulitis or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
+    #     'chrom_keys': ['fat'], # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
+    #     'd65': False, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys
+    #     'scrambled_chrom': True}, # If scrambling the chromophores to be the same size but completely random
+    # ]
+
     save_folder = Path(f'/Users/maycaj/Downloads/SpectrumClassifier2 {str(datetime.now().strftime("%Y-%m-%d %H %M"))}')
     with keep.running(on_fail='warn'): # keeps running when lid is shut
-        for run_num, parameters in enumerate(paramters_dict):
+        for run_num, parameters in enumerate(parameters_dict):
             classifier = SpectrumClassifier(run_num, save_folder, **parameters)
             classifier.run()
     plt.show()
