@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import pathlib as path
  
 #CONFIGURATION
-svm_weights_csv_path = path.PosixPath('/Users/maycaj/Downloads/May28coefs_acc=92_1748823004609_0.1n=43i=10.csv')
+svm_weights_csv_path = path.PosixPath('/Users/maycaj/Downloads/SpectrumClassifier2 2025-06-26 21 55/Run 0/coefs__acc=93.8pct=1i=30 May28_CR_FullRound1and2AllWLs_medians.csv')
 chromophore_datasets = { # Pick which chromophores to correlate with
     'Hb_diff': '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv',
     'Hb_deoxy': '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv',
@@ -21,20 +21,19 @@ chromophore_datasets = { # Pick which chromophores to correlate with
     # 'pheomelanin': '/Users/maycaj/Documents/HSI/Absorbances/Pheomelanin.csv'
 }
 ## All wavelengths
-nmStart, nmEnd = 375, 1043
+# nmStart, nmEnd = 375, 1043
 # Hemoglobins Region
-# nmStart, nmEnd = 526, 600
+nmStart, nmEnd = 375, 600
  
  
 df_weights = pd.read_csv(svm_weights_csv_path)
 # df_weights.columns = df_weights.columns.astype(float)
-df_weights.columns = [float(col.split('_')[1]) for col in df_weights.columns]
 df_weights_T = df_weights.T
 df_weights_T['median_weight'] = df_weights_T.median(axis=1)
 w_median_abs = df_weights_T['median_weight'].abs()
 w_zscore = (w_median_abs - w_median_abs.mean()) / w_median_abs.std()
 df_weights_plot = pd.DataFrame({
-    'wavelength': df_weights_T.index,
+    'wavelength': [float(num) for num in df_weights_T.index],
     'SVM_weight_zscore': w_zscore,
     'SVM_weight_abs': w_median_abs
 })
