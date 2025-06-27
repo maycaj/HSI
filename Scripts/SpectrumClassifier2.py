@@ -16,9 +16,7 @@ import sys
 from pathlib import Path
 import shutil
 import json  # Add this import for saving parameters as JSON or text
-from wakepy import keep
 from sklearn.linear_model import SGDClassifier
-import gc
 import plotly.graph_objects as go
 
 class DataLoader:
@@ -714,8 +712,7 @@ if __name__ == '__main__':
     # ]
 
     save_folder = Path(f'/Users/maycaj/Downloads/SpectrumClassifier2 {str(datetime.now().strftime("%Y-%m-%d %H %M"))}')
-    with keep.running(on_fail='warn'): # keeps running when lid is shut
-        for run_num, parameters in enumerate(parameters_dict):
-            classifier = SpectrumClassifier(run_num, save_folder, **parameters)
-            classifier.run()
+    for run_num, parameters in enumerate(parameters_dict):
+        classifier = SpectrumClassifier(run_num, save_folder, **parameters)
+        classifier.run()
     plt.show()
