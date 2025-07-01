@@ -85,7 +85,7 @@ class ChromDotSpectra:
         # find the wavelengths where the skin wavelengths, absorbance wavelengths, and (if applicable) d60 wavelengths overlap
         x_abs = pd.read_csv(absorbPath)['lambda nm'].values
         dot_waves = [col for col in skin_waves if (col >= min(x_abs)) & (col <= max(x_abs))]
-        d60_path = '/Users/maycaj/Documents/HSI/Absorbances/CIE_std_illum_D65.csv'
+        d60_path = '/Users/cameronmay/Documents/HSI/Absorbances/CIE_std_illum_D65.csv'
         if d60: # if d60, ensure that the wavelengths are within the range of d60
             x_abs_d60 = pd.read_csv(d60_path)['lambda nm'].values
             dot_waves = [col for col in dot_waves if (col >= min(x_abs_d60)) & (col <= max(x_abs_d60))]
@@ -334,15 +334,15 @@ class SpectrumClassifier:
         print('Performing dot product')
         # nm_start_end_str = ['Wavelength_' + str(self.nm_start), 'Wavelength_' + str(self.nm_end)]
         dot_data = { # Name, column key, and filepath of the absorbance data
-            'HbO2': ('HbO2 cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv'),
-            'Hb': ('Hb cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv'),
-            'H2O': ('H2O 1/cm', '/Users/maycaj/Documents/HSI/Absorbances/Water Absorbance.csv'),
-            'Pheomelanin': ('Pheomelanin cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/Pheomelanin.csv'),
-            'Eumelanin': ('Eumelanin cm-1/M', '/Users/maycaj/Documents/HSI/Absorbances/Eumelanin Absorbance.csv'),
-            'fat': ('fat', '/Users/maycaj/Documents/HSI/Absorbances/Fat Absorbance.csv'),
-            'L': ('L', '/Users/maycaj/Documents/HSI/Absorbances/LM Absorbance.csv'),
-            'M': ('M', '/Users/maycaj/Documents/HSI/Absorbances/LM Absorbance.csv'),
-            'S': ('S', '/Users/maycaj/Documents/HSI/Absorbances/S Absorbance.csv')
+            'HbO2': ('HbO2 cm-1/M', '/Users/cameronmay/Documents/HSI/Absorbances/Hb_HbO2 Absorbance.csv'),
+            'Hb': ('Hb cm-1/M', '/Users/cameronmay/Documents/HSI/Absorbances/Hb_HbO2 Absorbance.csv'),
+            'H2O': ('H2O 1/cm', '/Users/cameronmay/Documents/HSI/Absorbances/Water Absorbance.csv'),
+            'Pheomelanin': ('Pheomelanin cm-1/M', '/Users/cameronmay/Documents/HSI/Absorbances/Pheomelanin.csv'),
+            'Eumelanin': ('Eumelanin cm-1/M', '/Users/cameronmay/Documents/HSI/Absorbances/Eumelanin Absorbance.csv'),
+            'fat': ('fat', '/Users/cameronmay/Documents/HSI/Absorbances/Fat Absorbance.csv'),
+            'L': ('L', '/Users/cameronmay/Documents/HSI/Absorbances/LM Absorbance.csv'),
+            'M': ('M', '/Users/cameronmay/Documents/HSI/Absorbances/LM Absorbance.csv'),
+            'S': ('S', '/Users/cameronmay/Documents/HSI/Absorbances/S Absorbance.csv')
         }
         if self.chrom_keys is not None:
             chrom_interps = pd.DataFrame([])
@@ -454,7 +454,9 @@ class SpectrumClassifier:
                 cm = confusion_matrix(test_id['yTest'], test_id['yPred'], labels=y_categories)
                 if cm.size != 1:
                     TP, FN, FP, TN = cm.ravel()
-                    confusion_fold = pd.concat([confusion_fold, pd.DataFrame([[fold_num, ID, TN, FP, FN, TP]], columns=['foldNum', 'ID', 'TN', 'FP', 'FN', 'TP'])])
+                    Sensitivity = TP / (TP + FN)
+                    Specificity = TN / (TN + FP)
+                    confusion_fold = pd.concat([confusion_fold, pd.DataFrame([[fold_num, ID, TN, FP, FN, TP, Sensitivity, Specificity]], columns=['foldNum', 'ID', 'TN', 'FP', 'FN', 'TP', 'Sensitivity', 'Specificity'])])
 
         ## Save the predictions for each fold
         pred_loc_fold = test[['ID', 'yPred', 'FloatName', 'correct', y_col]].copy()
@@ -571,16 +573,18 @@ class SpectrumClassifier:
         coef_95CI = self.coefs.apply(lambda col: PostProcessor.bootstrap_series(col), axis=0)
         filename = self.filepath.split("/")[-1]
         plt.plot(abs(self.coefs.median(axis=0)), label='abs(median)')
-        plt.plot(coef_95CI.iloc[0, :], label='lower')
-        plt.plot(coef_95CI.iloc[1, :], label='upper')
+        plt.plot(coef_95CI.iloc[0, :], label='lower 95% CI')
+        plt.plot(coef_95CI.iloc[1, :], label='upper 95% CI')
         plt.xticks(rotation=90)
+        plt.ylabel('Coefficient Value')
         plt.title(f'{self.data_config} data:{self.filepath.split("/")[-1]} \n iterations: {self.iterations} n={self.selected_num} fracs={self.fracs}')
         plt.legend()
         plt.tight_layout()
 
         # find the confusion matricies for each ID
-        confusion = self.confusions.groupby('ID').sum() 
-        confusion = confusion.reset_index()
+        confusion_sum = self.confusions[['ID','TN','FP','FN','TP']].groupby('ID').sum() 
+        confusion_average = self.confusions[['ID','foldNum','Sensitivity','Specificity']].groupby('ID').mean()
+        confusion = pd.concat([confusion_sum, confusion_average], axis=1)
 
         ## Save all of the dataframes, figures, and this script into a new folder for each model run
         folder = self.save_folder / f'Run {self.run_num}'
@@ -589,17 +593,17 @@ class SpectrumClassifier:
         # Save parameters as a .txt file
         parameters_file = folder / 'parameters.txt'
         with open(parameters_file, 'w') as f:
-            json.dump(parameters_dict[run_num], f, indent=4)
+            json.dump(parameter_dicts[run_num], f, indent=4)
 
         self.IDaccs.loc['Info', 'Labels'] = f'input filename: {filename}' # add metadata
-        # IDaccs.to_csv(f'/Users/maycaj/Downloads/{date}IDaccs_n={selectedNum}i={iterations}.csv') # Save the accuracy as csv
-        # PredLocs.to_csv(f'/Users/maycaj/Downloads/{date}PredLocs_n={selectedNum}i={iterations}.csv.gz', compression='gzip', index=False) # Save predictions with locations as csv
-        # confusion.to_csv(f'/Users/maycaj/Downloads/{date}confusion_n={selectedNum}i={iterations}.csv') # Saves each confusion matrix grouped by ID
-        # confusions.to_csv(f'/Users/maycaj/Downloads/{date}confusions_n={selectedNum}i={iterations}.csv') # Saves each confusion matrix without grouping by ID
+        self.IDaccs.to_csv(folder / 'IDaccs.csv') # Save the accuracy as csv
+        # PredLocs.to_csv(f'/Users/cameronmay/Downloads/{date}PredLocs_n={selectedNum}i={iterations}.csv.gz', compression='gzip', index=False) # Save predictions with locations as csv
+        confusion.to_csv(folder / 'confusion.csv') # Saves each confusion matrix grouped by ID
+        self.confusions.to_csv(folder / 'confusions.csv') # Saves each confusion matrix without grouping by ID
         leg_fig.savefig(folder / f'leg__pct={self.fracs}i={self.iterations} {filename}.pdf') # saves rounded accuracy
-        patch_fig.savefig(folder / f'patch__acc={patch_acc}pct={self.fracs}i={self.iterations} {filename}.pdf') # saves patch accuracy
-        coef_fig.savefig(folder / f'coef__acc={patch_acc}pct={self.fracs}i={self.iterations } {filename}.pdf') # saves SVM coefficients plot
-        self.coefs.to_csv(folder / f'coefs__acc={patch_acc}pct={self.fracs}i={self.iterations} {filename}', index=False) # saves coefficinets used to make coefFig as a csv
+        patch_fig.savefig(folder / f'patch__acc={patch_acc}pct={self.fracs}.pdf') # saves patch accuracy
+        coef_fig.savefig(folder / f'coef__acc={patch_acc}pct={self.fracs}.pdf') # saves SVM coefficients plot
+        self.coefs.to_csv(folder / f'coefs__acc={patch_acc}pct={self.fracs}', index=False) # saves coefficinets used to make coefFig as a csv
         if self.scrambled_chrom:
             self.chrom_interp.to_csv(folder / 'chrom_interps.csv') # Saves chromophores each fold 
         shutil.copy(sys.argv[0], folder / 'SpectrumClassifier2.py') 
@@ -615,46 +619,11 @@ class SpectrumClassifier:
 
 if __name__ == '__main__':
     # Can run several different sets of parameters in sucession. parameters_dict is a list of dicionaries and each dictionary is a seperate model run
-    parameters_dict = [
-        # {
-        # 'fracs':0.01, # Fraction of examples to include
-        # 'filepath': '/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs.csv', # filepath of our dataset
-        # # 'fracs': 1, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', 
-        # 'iterations':10, # number of iterations to run the model
-        # 'n_jobs':-1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
-        # 'y_col':'Foldername', # what column of the data from filepath to fit on
-        # 'scale':True, # if using StandardScaler() for the SVM
-        # 'optimize':False, # if optimizing, C, kernel, and gamma 
-        # 'stochastic':False, # if using stochastic gradient descent (better for larger amounts of data). Else use linear SVM 
-        # 'nm_start':411.27, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
-        # 'nm_end':1004.39, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
-        # 'data_config' : 'Round 1 & 2: cellulitis or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
-        # 'chrom_keys': None, # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
-        # 'd65': False, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys
-        # 'scrambled_chrom': False}, # If scrambling the chromophores to be the same size but completely random
-
-        # {
-        # 'fracs':0.01, # Fraction of examples to include
-        # 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs.csv', # filepath of our dataset
-        # # 'fracs': 1, 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', 
-        # 'iterations':10, # number of iterations to run the model
-        # 'n_jobs':-1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
-        # 'y_col':'Foldername', # what column of the data from filepath to fit on
-        # 'scale':True, # if using StandardScaler() for the SVM
-        # 'optimize':False, # if optimizing, C, kernel, and gamma 
-        # 'stochastic':False, # if using stochastic gradient descent (better for larger amounts of data). Else use linear SVM 
-        # 'nm_start':451.18, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
-        # 'nm_end':954.83, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
-        # 'data_config' : 'Round 1 & 2: cellulitis or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
-        # 'chrom_keys': None, # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
-        # 'd65': False, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys
-        # 'scrambled_chrom': False}, # If scrambling the chromophores to be the same size but completely random
-
-        {
-        # 'fracs':0.01, # Fraction of examples to include
-        # 'filepath':'/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs.csv', # filepath of our dataset
-        'fracs': 1, 'filepath': '/Users/maycaj/Documents/HSI/PatchCSVs/May28_CR_FullRound1and2AllWLs_medians.csv', 
-        'iterations':30, # number of iterations to run the model
+    parameter_dict = {
+        'fracs':0.01, # Fraction of examples to include
+        'filepath':'/Users/cameronmay/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv', # filepath of our dataset
+        # 'fracs': 1, 'filepath': '/Users/cameronmay/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', 
+        'iterations':15, # number of iterations to run the model
         'n_jobs':-1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
         'y_col':'Foldername', # what column of the data from filepath to fit on
         'scale':True, # if using StandardScaler() for the SVM
@@ -665,12 +634,17 @@ if __name__ == '__main__':
         'data_config' : 'Round 1 & 2: cellulitis or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
         'chrom_keys': None, # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
         'd65': False, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys
-        'scrambled_chrom': False}, # If scrambling the chromophores to be the same size but completely random
+        'scrambled_chrom': False} # If scrambling the chromophores to be the same size but completely random
         
-    ]
 
-    save_folder = Path(f'/Users/maycaj/Downloads/SpectrumClassifier2 {str(datetime.now().strftime("%Y-%m-%d %H %M"))}')
-    for run_num, parameters in enumerate(parameters_dict):
+    # To do Same run over all of the different chromophores
+    chromophores = ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'] 
+    parameter_dicts = [parameter_dict.copy() for chromophore in chromophores] # make a copy of the parameters_dict so that we can run multiple models with different parameters
+    for i, chromophore in enumerate(chromophores):
+        parameter_dicts[i]['chrom_keys'] = [chromophore]
+
+    save_folder = Path(f'/Users/cameronmay/Downloads/SpectrumClassifier2 {str(datetime.now().strftime("%Y-%m-%d %H %M"))}')
+    for run_num, parameters in enumerate(parameter_dicts):
         classifier = SpectrumClassifier(run_num, save_folder, **parameters)
         classifier.run()
     plt.show()

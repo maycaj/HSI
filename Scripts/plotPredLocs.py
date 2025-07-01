@@ -1,10 +1,13 @@
+### Plot the predictions on the RGB images with color coding based on the ratio of HbO2 to Hb or using other chromophores.
+# How to use: Adjust pred_col to be the column name of the predictions in the CSV and set the other paths accordingly.
+
 from sklearn.preprocessing import QuantileTransformer
 import pandas as pd
 import os
 from PIL import Image, ImageDraw, ImageChops
 import numpy as np
 from scipy import stats
-from ChromDotSpectra import chrom_dot_spectra
+from SpectrumClassifier2 import ChromDotSpectra
 import pyarrow.csv as pv
 
 class convertColors:
@@ -111,8 +114,8 @@ def highlight_pixels(csv_path, image_folder, output_folder, pred_col):
         HbO2Path = '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv'
         nmStart = 'Wavelength_451.18' #'Wavelength_411.27' #'Wavelength_411.27'
         nmEnd = 'Wavelength_954.83' #'Wavelength_987.82' #'Wavelength_1004.39'
-        chrom_dot_spectra(df_sel, [nmStart,nmEnd], 'HbO2 cm-1/M', 'HbO2', HbO2Path, plot=False) # Find HbO2 for each pixel
-        chrom_dot_spectra(df_sel, [nmStart,nmEnd], 'Hb cm-1/M', 'Hb', HbO2Path, plot=False) # Find Hb for each pixel
+        ChromDotSpectra.chrom_dot_spectra(df_sel, [nmStart,nmEnd], 'HbO2 cm-1/M', 'HbO2', HbO2Path, plot=False) # Find HbO2 for each pixel
+        ChromDotSpectra.chrom_dot_spectra(df_sel, [nmStart,nmEnd], 'Hb cm-1/M', 'Hb', HbO2Path, plot=False) # Find Hb for each pixel
         df_sel[pred_col] = df_sel['HbO2'] / df_sel['Hb']
         # sel_columns = [pred_col,'X','Y']
         # df_sel = df_sel[sel_columns]
@@ -160,11 +163,8 @@ def highlight_pixels(csv_path, image_folder, output_folder, pred_col):
     print('Done saving images')
 
 if __name__ == '__main__':
-    predLocsPath = '/Users/maycaj/Documents/HSI/PatchCSVs/June_9_NOCRAndSmoothing_FullRound1and2AllWLs.csv'
-    RGBfolder = "/Users/maycaj/Documents/HSI/RGB"
-    pred_col = 'HbO2/Hb'
-    LabelledOutputFolder = '/Users/maycaj/Documents/HSI/Model Preds/HbO2:Hb Jun 9'
-
+    predLocsPath = '/Users/maycaj/Documents/HSI/PatchCSVs/June_9_NOCRAndSmoothing_FullRound1and2AllWLs.csv' # Path to the CSV with predictions and locations
+    RGBfolder = "/Users/maycaj/Documents/HSI/RGB" # RGB images folder
+    pred_col = 'HbO2/Hb' # Column name of the predictions in the CSV
+    LabelledOutputFolder = '/Users/maycaj/Documents/HSI/Model Preds/HbO2:Hb Jun 9' # Output folder for the highlighted images
     highlight_pixels(predLocsPath, RGBfolder, LabelledOutputFolder, pred_col)
-    breakpoint()
-    pass

@@ -8,24 +8,35 @@ import plotly.graph_objects as go
 import plotly.offline as pyo
 import matplotlib.pyplot as plt
 import pathlib as path
+import shutil
+import sys
  
 #CONFIGURATION
-svm_weights_csv_path = path.PosixPath('/Users/maycaj/Downloads/SpectrumClassifier2 2025-06-26 21 55/Run 0/coefs__acc=93.8pct=1i=30 May28_CR_FullRound1and2AllWLs_medians.csv')
-chromophore_datasets = { # Pick which chromophores to correlate with
-    'Hb_diff': '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv',
-    'Hb_deoxy': '/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv',
-    'Hb_oxy':'/Users/maycaj/Documents/HSI/Absorbances/HbO2 Absorbance.csv',
-    'fat': '/Users/maycaj/Documents/HSI/Absorbances/Fat Absorbance.csv',
-    'water': '/Users/maycaj/Documents/HSI/Absorbances/Water Absorbance.csv',
-    # 'eumelanin': '/Users/maycaj/Documents/HSI/Absorbances/Eumelanin Absorbance.csv',
-    # 'pheomelanin': '/Users/maycaj/Documents/HSI/Absorbances/Pheomelanin.csv'
-}
-## All wavelengths
+# Path to the SVM weights CSV file and chromophore datasets
+svm_weights_csv_path = path.PosixPath('/Users/cameronmay/Downloads/SpectrumClassifier2 2025-06-27 15 34/Run 0/coefs__acc=82.9pct=1i=30 May_29_NOCR_FullRound1and2AllWLs_medians.csv')
+dot_data = { # Name, column key, and filepath of the absorbance data
+    'HbO2': ('HbO2 cm-1/M', 'Hb_HbO2 Absorbance.csv'),
+    'Hb': ('Hb cm-1/M', 'Hb_HbO2 Absorbance.csv'), 
+    'Hb_diff': ('Hb_diff', 'Hb_HbO2 Absorbance.csv'), 
+    # 'H2O': ('H2O 1/cm', 'Water Absorbance.csv'),
+    'Pheomelanin': ('Pheomelanin cm-1/M', 'Pheomelanin.csv'),
+    'Eumelanin': ('Eumelanin cm-1/M', 'Eumelanin Absorbance.csv'),
+    # 'fat': ('fat', 'Fat Absorbance.csv'),
+    # 'L': ('L', 'LM Absorbance.csv'),
+    # 'M': ('M', 'LM Absorbance.csv'),
+    # 'S': ('S', 'S Absorbance.csv'),
+    # 'D65': ('D65', 'CIE_std_illum_D65.csv'),
+
+    }
+absorb_folder = path.PosixPath('/Users/cameronmay/Documents/HSI/Absorbances')
+
+## Specify the wavelength range for the analysis
+# All wavelengths
 # nmStart, nmEnd = 375, 1043
 # Hemoglobins Region
-nmStart, nmEnd = 375, 600
+nmStart, nmEnd = 500, 600
  
- 
+ ## Load in SVM weights and Z-score them
 df_weights = pd.read_csv(svm_weights_csv_path)
 # df_weights.columns = df_weights.columns.astype(float)
 df_weights_T = df_weights.T
@@ -41,25 +52,21 @@ df_weights_plot = df_weights_plot[(df_weights_plot['wavelength'] >= nmStart) & (
 
 output_files = []
  
-for label, chromo_path in chromophore_datasets.items():
-    df_chromo = pd.read_csv(chromo_path)
+ # Loop over all of the data in dot_data and plot the chromophore absorbance, SVM weights, and the Pearson correlation
+for key, (label, filename) in dot_data.items():
+    filepath = absorb_folder / path.PosixPath(filename)
+    df_chromo = pd.read_csv(filepath)
     df_chromo.rename(columns={'lambda nm': 'wavelength'}, inplace=True)
     df_chromo = df_chromo[(df_chromo['wavelength'] >= nmStart) & (df_chromo['wavelength'] <= nmEnd)].copy()
     df_chromo.sort_values('wavelength', inplace=True)
  
-    if label == 'Hb_diff':
+    # Plot additional relationships 
+    if key == 'Hb_diff':
         df_chromo['signal'] = (df_chromo['HbO2 cm-1/M'] - df_chromo['Hb cm-1/M']).abs()
         chromo_name = '|HbO₂ - Hb|'
-    elif label == 'Hb_deoxy':
-        chromo_name = f'{label.capitalize()} Absorbance'
-        df_chromo['signal'] = df_chromo['Hb cm-1/M']
-    elif label == 'HbO2_oxy':
-        chromo_name = f'{label.capitalize()} Absorbance'
-        df_chromo['signal'] = df_chromo['HbO2 cm-1/M']
     else:
-        chromo_name = f'{label.capitalize()} Absorbance'
-        signal_col = df_chromo.columns[1]
-        df_chromo['signal'] = df_chromo[signal_col]
+        chromo_name = f'{key.capitalize()} Absorbance'
+        df_chromo['signal'] = df_chromo[label]
  
     # Normalize
     mean = df_chromo['signal'].mean()
@@ -86,26 +93,11 @@ for label, chromo_path in chromophore_datasets.items():
         yaxis2=dict(title='SVM Weights (Z)', overlaying='y', side='right', showgrid=False),
         template='plotly_white', height=500
     )
-    html_path = svm_weights_csv_path.parent / f'pearson_r={r:.2f}_{label}_vs_svm.html'
-    pdf_path = f'/Users/maycaj/Documents/HSI/Pearson/pearson_r={r:.2f}_{label}_vs_svm.pdf'
+    html_path = svm_weights_csv_path.parent / f'pearson_r={r:.2f}_{key}_vs_svm.html'
+    pdf_path = f'/Users/maycaj/Documents/HSI/Pearson/pearson_r={r:.2f}_{key}_vs_svm.pdf'
     pyo.plot(fig, filename=str(html_path), auto_open=True)
- 
-    # # Matplotlib version
-    # plt.figure(figsize=(6, 3))
-    # fig_mt, ax1 = plt.subplots()
-    # ax1.plot(interp_x, interp_y, color='tab:blue', linewidth=1.2)
-    # ax1.set_xlabel('Wavelength (nm)')
-    # ax1.set_ylabel(chromo_name, color='tab:blue')
-    # ax1.tick_params(axis='y', labelcolor='tab:blue')
-    # ax2 = ax1.twinx()
-    # ax2.plot(interp_x, svm_y, color='tab:orange', linestyle='dashed', linewidth=1.2)
-    # ax2.set_ylabel('SVM Weights (Z)', color='tab:orange')
-    # ax2.tick_params(axis='y', labelcolor='tab:orange')
-    # plt.title(f'{chromo_name} vs. SVM Weights\n{sim_text}', fontsize=10)
-    # plt.tight_layout()
-    # plt.savefig(pdf_path, format='pdf')
-    # plt.close()
- 
+
     output_files.append((label, html_path, pdf_path))
 
+shutil.copy(sys.argv[0], html_path.parent / 'PlotChromophores.py')
 print('All done')
