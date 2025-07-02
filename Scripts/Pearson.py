@@ -13,22 +13,24 @@ import sys
  
 #CONFIGURATION
 # Path to the SVM weights CSV file and chromophore datasets
-svm_weights_csv_path = path.PosixPath('/Users/cameronmay/Downloads/SpectrumClassifier2 2025-06-27 15 34/Run 0/coefs__acc=82.9pct=1i=30 May_29_NOCR_FullRound1and2AllWLs_medians.csv')
+svm_weights_csv_path = path.PosixPath('/Users/cameronmay/Downloads/coefs__acc=93.8pct=1i=30 May28_CR_FullRound1and2AllWLs_medians.csv')
 dot_data = { # Name, column key, and filepath of the absorbance data
     'HbO2': ('HbO2 cm-1/M', 'Hb_HbO2 Absorbance.csv'),
     'Hb': ('Hb cm-1/M', 'Hb_HbO2 Absorbance.csv'), 
     'Hb_diff': ('Hb_diff', 'Hb_HbO2 Absorbance.csv'), 
-    # 'H2O': ('H2O 1/cm', 'Water Absorbance.csv'),
+    # 'H2O': ('H2O 1/cm', 'Water Absorbance.csv'), # is out of range below 667
     'Pheomelanin': ('Pheomelanin cm-1/M', 'Pheomelanin.csv'),
     'Eumelanin': ('Eumelanin cm-1/M', 'Eumelanin Absorbance.csv'),
-    # 'fat': ('fat', 'Fat Absorbance.csv'),
-    # 'L': ('L', 'LM Absorbance.csv'),
-    # 'M': ('M', 'LM Absorbance.csv'),
-    # 'S': ('S', 'S Absorbance.csv'),
+    'fat': ('fat', 'Fat Absorbance.csv'),
+    'L': ('L', 'LM Absorbance.csv'),
+    'M': ('M', 'LM Absorbance.csv'),
+    'S': ('S', 'S Absorbance.csv'),
     # 'D65': ('D65', 'CIE_std_illum_D65.csv'),
 
     }
 absorb_folder = path.PosixPath('/Users/cameronmay/Documents/HSI/Absorbances')
+absolute_value = False  # If True, use the absolute value of the SVM weights; if False, use the raw SVM weights
+negate = True  # If True, negate the SVM weights before plotting
 
 ## Specify the wavelength range for the analysis
 # All wavelengths
@@ -41,12 +43,18 @@ df_weights = pd.read_csv(svm_weights_csv_path)
 # df_weights.columns = df_weights.columns.astype(float)
 df_weights_T = df_weights.T
 df_weights_T['median_weight'] = df_weights_T.median(axis=1)
-w_median_abs = df_weights_T['median_weight'].abs()
-w_zscore = (w_median_abs - w_median_abs.mean()) / w_median_abs.std()
+if absolute_value:
+    median_weights = df_weights_T['median_weight'].abs()
+else:
+    median_weights = df_weights_T['median_weight']
+if negate:
+    median_weights = -median_weights
+
+w_zscore = (median_weights - median_weights.mean()) / median_weights.std()
 df_weights_plot = pd.DataFrame({
     'wavelength': [float(num) for num in df_weights_T.index],
     'SVM_weight_zscore': w_zscore,
-    'SVM_weight_abs': w_median_abs
+    'SVM_weight_abs': median_weights
 })
 df_weights_plot = df_weights_plot[(df_weights_plot['wavelength'] >= nmStart) & (df_weights_plot['wavelength'] <= nmEnd)].sort_values('wavelength')
 
@@ -87,14 +95,14 @@ for key, (label, filename) in dot_data.items():
     fig.add_trace(go.Scatter(x=interp_x, y=interp_y, mode='lines', name=chromo_name, yaxis='y1'))
     fig.add_trace(go.Scatter(x=interp_x, y=svm_y, mode='lines', name='SVM Weights (Z)', yaxis='y2', line=dict(dash='dot')))
     fig.update_layout(
-        title=f'{chromo_name} vs. SVM Weights (Z) ({sim_text})',
+        title=f'{chromo_name} vs. SVM Weights (Z) ({sim_text}) Absolute Value: {absolute_value}',
         xaxis=dict(title='Wavelength (nm)'),
         yaxis=dict(title=chromo_name, side='left', showgrid=False),
         yaxis2=dict(title='SVM Weights (Z)', overlaying='y', side='right', showgrid=False),
         template='plotly_white', height=500
     )
-    html_path = svm_weights_csv_path.parent / f'pearson_r={r:.2f}_{key}_vs_svm.html'
-    pdf_path = f'/Users/maycaj/Documents/HSI/Pearson/pearson_r={r:.2f}_{key}_vs_svm.pdf'
+    html_path = svm_weights_csv_path.parent / f'pearson_r={r:.2f}_{key}.html'
+    pdf_path = f'/Users/maycaj/Documents/HSI/Pearson/pearson_r={r:.2f}_{key}.pdf'
     pyo.plot(fig, filename=str(html_path), auto_open=True)
 
     output_files.append((label, html_path, pdf_path))

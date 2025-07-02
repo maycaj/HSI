@@ -250,8 +250,13 @@ class PostProcessor:
         yerr_lower = df[error_key_lower]
         yerr_upper = df[error_key_upper]
         fig, ax = plt.subplots()
-        bars = ax.bar(labels, values, yerr=[yerr_lower,yerr_upper])
+        bars = ax.bar(labels, values, yerr=[yerr_lower,yerr_upper], color='grey')
         ax.tick_params(axis='x', labelsize=5, rotation=90)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
+    
         plt.xlabel(xlabel)
         plt.ylabel(ylabel)
         acc = str(round(values['Column Average']*100, 1))
@@ -432,6 +437,10 @@ class SpectrumClassifier:
             X_test = scaler.transform(X_test)
         y_pred = svm.predict(X_test)
 
+        expected = ['EdemaFalse', 'EdemaTrue']
+        if not np.array_equal(np.unique(y_train), np.array(expected)):
+            raise ValueError(f'Unexpected y_train categories or order: {np.unique(y_train)}. Expected: {expected} \n This changes interpertation of the SVM coefficients')
+
         if optimize:
             if svc_params['kernel'] == 'linear':
                 coef_fold = pd.DataFrame(svm.coef_[0].reshape(1, -1), columns=col_names)
@@ -440,6 +449,8 @@ class SpectrumClassifier:
         else:
             coef_fold = pd.DataFrame(svm.coef_[0].reshape(1, -1), columns=col_names)
 
+        coef_fold['Negative'] = np.unique(y_train)[0] # Add the negative class label
+        coef_fold['Positive'] = np.unique(y_train)[1] # Add the positive class label
 
         test.loc[:, 'correct'] = y_test == y_pred
         test.loc[:, 'yPred'] = y_pred
@@ -529,7 +540,8 @@ class SpectrumClassifier:
             self.IDaccs.insert(2, f'ID {thresh} Rounded Avg', ID_round_avg) # add thresholded values as a new column
         self.IDaccs.loc['Column Average'] = self.IDaccs.drop(['ID', self.y_col], axis=1).mean(axis=0) # add average across columns
         has_folder_has_avg = (self.IDaccs.loc[:, self.y_col].notna()) | (self.IDaccs.index == 'Column Average')
-        iteration = self.IDaccs.loc[has_folder_has_avg, 'Iter 0 Fold 0':f'Iter {self.iterations-1} Fold {self.n_splits-1}']
+        iter_columns = [col for col in self.IDaccs.columns if col.startswith('Iter')] # Find the columns that are iterations
+        iteration = self.IDaccs.loc[has_folder_has_avg, iter_columns]
 
         # Bootstrap rows and add to dataframe
         CI95 = iteration.apply(lambda row: PostProcessor.bootstrap_series(row), axis=1) # apply 95% CI to iterations data
@@ -549,11 +561,23 @@ class SpectrumClassifier:
         # self.IDaccs.insert(2, 'YerrRounded', yerr_rounded)
 
         # Add labels needed for bar charts
-        self.IDaccs.insert(2, 'Labels', 'ID: ' + self.IDaccs['ID'].astype(str) + '\n' + 'Cat: ' + self.IDaccs[self.y_col].astype(str)) # find values to plot in bar chart
-        self.IDaccs.loc['Column Average', 'Labels'] = 'Column Average'
-        Folder_acc = self.IDaccs.groupby(self.y_col)['ID Avg'].mean() # find accuracy by foldernam; add to ID accs
+        self.IDaccs['ID'] = self.IDaccs['ID'].fillna(0).astype(int) # fill NaN IDs with 0 so we can convert to int for cleaner labels
+        self.IDaccs.insert(2, 'Labels', self.IDaccs['ID'].astype(int).astype(str) + ' ' + self.IDaccs[self.y_col].astype(str)) # find labels for bar chart
+        self.IDaccs.loc['Column Average', 'Labels'] = 'Column Average' # add column average label
+        
+        # Make a dataframe with the CI95 by edemaTrue and edemaFalse
+        Folder_acc = self.IDaccs.groupby(self.y_col)[['ID Avg','ID 0.5 Rounded Avg'] + iter_columns].mean() # find accuracy by foldername; add to IDaccs
         Folder_acc = Folder_acc.reset_index(inplace=False)
         Folder_acc['Labels'] = Folder_acc[self.y_col]
+        CI95_folder = Folder_acc[iter_columns].apply(lambda row: PostProcessor.bootstrap_series(row), axis=1)
+        Folder_acc.insert(2, '95%CI', CI95_folder) # add 95% CI to Folder_acc
+        Folder_acc.insert(2, 'Yerr', np.abs(Folder_acc['95%CI'] - Folder_acc['ID Avg'])) # add error needed for bar chart
+        Folder_acc.insert(2, 'Yerr lower', np.vstack(Folder_acc['Yerr'])[:,0])
+        Folder_acc.insert(3, 'Yerr upper', np.vstack(Folder_acc['Yerr'])[:,1])
+        Folder_acc.insert(2, 'Yerr round', np.abs(Folder_acc['95%CI'] - Folder_acc[f'ID {thresh} Rounded Avg'])) # add error needed for bar chart
+        Folder_acc.insert(2, 'Yerr lower round', np.vstack(Folder_acc['Yerr round'])[:,0])
+        Folder_acc.insert(3, 'Yerr upper round', np.vstack(Folder_acc['Yerr round'])[:,1])
+        
         self.IDaccs = pd.concat([self.IDaccs, Folder_acc], axis=0)
         Folder_round = self.IDaccs.groupby(self.y_col)['ID 0.5 Rounded Avg'].mean() # find rounded accuracy by foldername; add to ID_accs
         Folder_round = Folder_round.reset_index(inplace=False)
@@ -570,11 +594,19 @@ class SpectrumClassifier:
 
         # Plot the SVM coefficients
         coef_fig = plt.figure(figsize=(18, 4)) 
-        coef_95CI = self.coefs.apply(lambda col: PostProcessor.bootstrap_series(col), axis=0)
+        coef_plot = self.coefs.copy()
+        coef_plot = coef_plot.drop(['Negative', 'Positive'], axis=1) # drop the negative and positive class labels
+        coef_plot = coef_plot.apply(lambda col: PostProcessor.bootstrap_series(col), axis=0)
         filename = self.filepath.split("/")[-1]
-        plt.plot(abs(self.coefs.median(axis=0)), label='abs(median)')
-        plt.plot(coef_95CI.iloc[0, :], label='lower 95% CI')
-        plt.plot(coef_95CI.iloc[1, :], label='upper 95% CI')
+        ax = plt.gca()
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
+
+        plt.plot(abs(coef_plot.median(axis=0)), label='abs(median)')
+        plt.plot(coef_plot.iloc[0, :], label='lower 95% CI')
+        plt.plot(coef_plot.iloc[1, :], label='upper 95% CI')
         plt.xticks(rotation=90)
         plt.ylabel('Coefficient Value')
         plt.title(f'{self.data_config} data:{self.filepath.split("/")[-1]} \n iterations: {self.iterations} n={self.selected_num} fracs={self.fracs}')
@@ -593,7 +625,7 @@ class SpectrumClassifier:
         # Save parameters as a .txt file
         parameters_file = folder / 'parameters.txt'
         with open(parameters_file, 'w') as f:
-            json.dump(parameter_dicts[run_num], f, indent=4)
+            json.dump(parameter_dict[run_num], f, indent=4)
 
         self.IDaccs.loc['Info', 'Labels'] = f'input filename: {filename}' # add metadata
         self.IDaccs.to_csv(folder / 'IDaccs.csv') # Save the accuracy as csv
@@ -603,7 +635,7 @@ class SpectrumClassifier:
         leg_fig.savefig(folder / f'leg__pct={self.fracs}i={self.iterations} {filename}.pdf') # saves rounded accuracy
         patch_fig.savefig(folder / f'patch__acc={patch_acc}pct={self.fracs}.pdf') # saves patch accuracy
         coef_fig.savefig(folder / f'coef__acc={patch_acc}pct={self.fracs}.pdf') # saves SVM coefficients plot
-        self.coefs.to_csv(folder / f'coefs__acc={patch_acc}pct={self.fracs}', index=False) # saves coefficinets used to make coefFig as a csv
+        self.coefs.to_csv(folder / f'coefs__acc={patch_acc}pct={self.fracs}.csv', index=False) # saves coefficinets used to make coefFig as a csv
         if self.scrambled_chrom:
             self.chrom_interp.to_csv(folder / 'chrom_interps.csv') # Saves chromophores each fold 
         shutil.copy(sys.argv[0], folder / 'SpectrumClassifier2.py') 
@@ -618,7 +650,7 @@ class SpectrumClassifier:
         self.save_results()
 
 if __name__ == '__main__':
-    # Can run several different sets of parameters in sucession. parameters_dict is a list of dicionaries and each dictionary is a seperate model run
+    # Can run several different sets of parameters in sucession. parameters_dict is a dictionary or a list of dicionaries and each dictionary is a seperate model run
     parameter_dict = {
         'fracs':0.01, # Fraction of examples to include
         'filepath':'/Users/cameronmay/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv', # filepath of our dataset
@@ -629,22 +661,26 @@ if __name__ == '__main__':
         'scale':True, # if using StandardScaler() for the SVM
         'optimize':False, # if optimizing, C, kernel, and gamma 
         'stochastic':False, # if using stochastic gradient descent (better for larger amounts of data). Else use linear SVM 
-        'nm_start':451.18, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
-        'nm_end':954.83, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
+        'nm_start':376.61, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
+        'nm_end':1004.39, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
         'data_config' : 'Round 1 & 2: cellulitis or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
-        'chrom_keys': None, # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
-        'd65': False, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys
+        'chrom_keys': ['L','M','S'], # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
+        'd65': True, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys
         'scrambled_chrom': False} # If scrambling the chromophores to be the same size but completely random
         
+    replace_chromophores = False # If True, will run the model with each chromophore in chrom_keys. If False, will run the model with the chrom_keys specified in parameter_dict
 
-    # To do Same run over all of the different chromophores
-    chromophores = ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'] 
-    parameter_dicts = [parameter_dict.copy() for chromophore in chromophores] # make a copy of the parameters_dict so that we can run multiple models with different parameters
-    for i, chromophore in enumerate(chromophores):
-        parameter_dicts[i]['chrom_keys'] = [chromophore]
+    if replace_chromophores:
+        # To do Same run over all of the different chromophores. To use, set one parameter_dict, and this section will add one chromophore to each model run.
+        chromophores = ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'] 
+        parameter_dict = [parameter_dict.copy() for chromophore in chromophores] # make a copy of the parameters_dict so that we can run multiple models with different parameters
+        for i, chromophore in enumerate(chromophores):
+            parameter_dict[i]['chrom_keys'] = [chromophore]
+    else:
+        parameter_dict = [parameter_dict]
 
     save_folder = Path(f'/Users/cameronmay/Downloads/SpectrumClassifier2 {str(datetime.now().strftime("%Y-%m-%d %H %M"))}')
-    for run_num, parameters in enumerate(parameter_dicts):
+    for run_num, parameters in enumerate(parameter_dict):
         classifier = SpectrumClassifier(run_num, save_folder, **parameters)
         classifier.run()
     plt.show()
