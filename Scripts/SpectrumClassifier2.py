@@ -68,7 +68,7 @@ class ChromDotSpectra:
         return x_interp, y_interp, x_abs, y_abs
 
     @staticmethod
-    def chrom_dot_spectra(data, nmStartEnd, spectraName, outputName, absorbPath, d60=True, scrambled_chrom=False, normalized=False, plot=True):
+    def chrom_dot_spectra(data, nmStartEnd, spectraName, outputName, absorbPath, d65_and_cones=True, scrambled_chrom=False, normalized=False, plot=True):
         '''
         Takes dataframe and performs dot product with Hemoglobin's response curve to see the total absorbance of hemoglobin in the skin.
         Args:
@@ -76,19 +76,19 @@ class ChromDotSpectra:
             nmStartEnd: [startingWavelength, endingWavelength] in data
             spectraName: Name of column in the absorbance csv
             absorbPath: path to .csv with the absorbances
-            d60 (bool): if combining the spectra with the daylight axis
+            d65 (bool): if combining the spectra with the daylight axis
             normalized (bool): if dividing the resultant output by its max such that the highest number is 1
             plot (bool): if plotting
         '''
         skin_waves = list(data.loc[:,nmStartEnd[0]:nmStartEnd[1]].columns) # find the wavelengths captured by camera
 
-        # find the wavelengths where the skin wavelengths, absorbance wavelengths, and (if applicable) d60 wavelengths overlap
+        # find the wavelengths where the skin wavelengths, absorbance wavelengths, and (if applicable) d65 wavelengths overlap
         x_abs = pd.read_csv(absorbPath)['lambda nm'].values
         dot_waves = [col for col in skin_waves if (col >= min(x_abs)) & (col <= max(x_abs))]
-        d60_path = '/Users/cameronmay/Documents/HSI/Absorbances/CIE_std_illum_D65.csv'
-        if d60: # if d60, ensure that the wavelengths are within the range of d60
-            x_abs_d60 = pd.read_csv(d60_path)['lambda nm'].values
-            dot_waves = [col for col in dot_waves if (col >= min(x_abs_d60)) & (col <= max(x_abs_d60))]
+        d65_path = '/Users/cameronmay/Documents/HSI/Absorbances/CIE_std_illum_D65.csv'
+        if d65_and_cones: # if d65, ensure that the wavelengths are within the range of d65
+            x_abs_d65 = pd.read_csv(d65_path)['lambda nm'].values
+            dot_waves = [col for col in dot_waves if (col >= min(x_abs_d65)) & (col <= max(x_abs_d65))]
         
         x_interp, y_interp_chrom, x_abs, y_abs = ChromDotSpectra.load_and_interpolate(absorbPath,'lambda nm',spectraName,dot_waves)
 
@@ -109,15 +109,16 @@ class ChromDotSpectra:
 
         # find wavelengths that are in range for both the chromophores and the skin
         data_selected = data.loc[:,dot_waves].values
-        if d60: # multiply by daylight axis
-            x_interp, y_interp_d60, x_abs_d60, y_abs_d60 = ChromDotSpectra.load_and_interpolate(d60_path,'lambda nm','D65',dot_waves)
+        if d65_and_cones: # multiply by daylight axis
+            x_interp, y_interp_d65, x_abs_d65, y_abs_d65 = ChromDotSpectra.load_and_interpolate(d65_path,'lambda nm','D65',dot_waves)
             if plot:
-                fig1.add_trace(go.Scatter(x=x_interp, y=y_interp_d60, name=f'Interp d60'))
-                fig1.add_trace(go.Scatter(x=x_abs_d60, y=y_abs_d60, name=f'Original d60'))
+                fig1.add_trace(go.Scatter(x=x_interp, y=y_interp_d65, name=f'Interp d65'))
+                fig1.add_trace(go.Scatter(x=x_abs_d65, y=y_abs_d65, name=f'Original d65'))
                 fig1.show()
-            data_selected = data_selected * y_interp_d60 
-        data_selected = np.where(data_selected == 0, 1e-10, data_selected) # Ensure there is no divide by zero error in next step
-        data_selected = np.log10(1 / data_selected) # Absorbance = log10(1 / reflectance)
+            data_selected = data_selected * y_interp_d65 
+        else: # if not d65, convert to apparent absorbance
+            data_selected = np.where(data_selected == 0, 1e-10, data_selected) # Ensure there is no divide by zero error in next step
+            data_selected = np.log10(1 / data_selected) # Absorbance = log10(1 / reflectance)
         data[outputName] = np.dot(data_selected, y_interp_chrom)
 
         # Normalize output
@@ -265,7 +266,7 @@ class PostProcessor:
         return fig, acc
 
 class SpectrumClassifier:
-    def __init__(self, run_num, save_folder, filepath, fracs, iterations, n_jobs, y_col, scale, optimize, stochastic, nm_start, nm_end, data_config, chrom_keys, d65, scrambled_chrom):
+    def __init__(self, run_num, save_folder, filepath, fracs, iterations, n_jobs, y_col, scale, optimize, stochastic, nm_start, nm_end, data_config, chrom_keys, d65_and_cones, scrambled_chrom):
         self.run_num = run_num
         self.save_folder = save_folder
         self.filepath = filepath
@@ -280,7 +281,7 @@ class SpectrumClassifier:
         self.nm_end = nm_end
         self.data_config = data_config
         self.chrom_keys = chrom_keys
-        self.d65 = d65
+        self.d65_and_cones = d65_and_cones
         self.scrambled_chrom = scrambled_chrom
         self.start_time = time.time()
         self.df = DataLoader.load_dataframe(filepath)
@@ -354,7 +355,7 @@ class SpectrumClassifier:
             ## Take the dot product of each chromophore, save output in df, and save each dot 
             for key in self.chrom_keys:
                 chrom_interp = ChromDotSpectra.chrom_dot_spectra(self.df, [self.nm_start,self.nm_end], dot_data[key][0], key, dot_data[key][1],
-                                   self.d65, self.scrambled_chrom, normalized=False, plot=False)
+                                   self.d65_and_cones, self.scrambled_chrom, normalized=False, plot=False)
                 chrom_interps = pd.concat([chrom_interps, chrom_interp], axis=0)
             self.col_names = self.chrom_keys # replace column names 
         else:
@@ -651,33 +652,36 @@ class SpectrumClassifier:
 
 if __name__ == '__main__':
     # Can run several different sets of parameters in sucession. parameters_dict is a dictionary or a list of dicionaries and each dictionary is a seperate model run
-    parameter_dict = {
-        'fracs':0.01, # Fraction of examples to include
-        'filepath':'/Users/cameronmay/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv', # filepath of our dataset
-        # 'fracs': 1, 'filepath': '/Users/cameronmay/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', 
+    parameter_dict = [
+        {
+        # 'fracs':0.01, # Fraction of examples to include
+        # 'filepath':'/Users/cameronmay/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv', # filepath of our dataset
+        'fracs': 1, 'filepath': '/Users/cameronmay/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', 
         'iterations':15, # number of iterations to run the model
         'n_jobs':-1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
         'y_col':'Foldername', # what column of the data from filepath to fit on
         'scale':True, # if using StandardScaler() for the SVM
         'optimize':False, # if optimizing, C, kernel, and gamma 
         'stochastic':False, # if using stochastic gradient descent (better for larger amounts of data). Else use linear SVM 
-        'nm_start':376.61, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
-        'nm_end':1004.39, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
-        'data_config' : 'Round 1 & 2: cellulitis or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
-        'chrom_keys': ['L','M','S'], # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
-        'd65': True, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys
-        'scrambled_chrom': False} # If scrambling the chromophores to be the same size but completely random
+        'nm_start':451.18, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
+        'nm_end': 1004.39, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
+        'data_config' : 'Round 1 & 2: peripheral or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
+        'chrom_keys': None, # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
+        'd65_and_cones': True, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys. Also does not convert hyperspectral data to apparent absorbance, instead it keeps it in reflectance.
+        'scrambled_chrom': False}, # If scrambling the chromophores to be the same size but completely random
+
+    ]
         
     replace_chromophores = False # If True, will run the model with each chromophore in chrom_keys. If False, will run the model with the chrom_keys specified in parameter_dict
 
     if replace_chromophores:
         # To do Same run over all of the different chromophores. To use, set one parameter_dict, and this section will add one chromophore to each model run.
+        if len(parameter_dict) > 1:
+            raise ValueError('If replace_chromophores is True, parameter_dict should be a single dictionary, not a list of dictionaries.')
         chromophores = ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'] 
         parameter_dict = [parameter_dict.copy() for chromophore in chromophores] # make a copy of the parameters_dict so that we can run multiple models with different parameters
         for i, chromophore in enumerate(chromophores):
             parameter_dict[i]['chrom_keys'] = [chromophore]
-    else:
-        parameter_dict = [parameter_dict]
 
     save_folder = Path(f'/Users/cameronmay/Downloads/SpectrumClassifier2 {str(datetime.now().strftime("%Y-%m-%d %H %M"))}')
     for run_num, parameters in enumerate(parameter_dict):
