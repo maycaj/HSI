@@ -10,7 +10,7 @@ import pandas as pd
 from sklearn.model_selection import KFold, GridSearchCV
 import time
 from joblib import Parallel, delayed
-import pyarrow.csv as pv
+# import pyarrow.csv as pv
 from datetime import datetime
 import sys
 from pathlib import Path
@@ -668,7 +668,7 @@ if __name__ == '__main__':
         'data_config' : 'Round 1 & 2: peripheral or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
         'chrom_keys': None, # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
         'd65_and_cones': True, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys. Also does not convert hyperspectral data to apparent absorbance, instead it keeps it in reflectance.
-        'scrambled_chrom': False}, # If scrambling the chromophores to be the same size but completely random
+        'scrambled_chrom': False}, # If scrambling the chromophores to be the same size but completely random. Only affects output if chrom_keys is not None.
 
     ]
         

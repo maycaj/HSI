@@ -14,7 +14,7 @@ import sys
  
 #CONFIGURATION
 # Path to the SVM weights CSV file and chromophore datasets
-svm_weights_csv_path = path.PosixPath('/Users/cameronmay/Downloads/SpectrumClassifier2 2025-07-02 12 03/Run 0/coefs__acc=61.7pct=1.csv')
+svm_weights_csv_path = path.PosixPath('/Users/cameronmay/Downloads/coefs__acc=61.7pct=1.csv')
 dot_data = { # Name, column key, and filepath of the absorbance data
     # 'HbO2': ('HbO2 cm-1/M', 'Hb_HbO2 Absorbance.csv'),
     # 'Hb': ('Hb cm-1/M', 'Hb_HbO2 Absorbance.csv'), 
@@ -31,7 +31,7 @@ dot_data = { # Name, column key, and filepath of the absorbance data
     }
 absorb_folder = path.PosixPath('/Users/cameronmay/Documents/HSI/Absorbances')
 absolute_value = False  # If True, use the absolute value of the SVM weights; if False, use the raw SVM weights
-negate = True  # If True, negate the SVM weights before plotting
+negate = False  # If True, negate the SVM weights before plotting
 
 ## Specify the wavelength range for the analysis
 # All wavelengths
@@ -39,7 +39,7 @@ nmStart, nmEnd = 375, 1043
 # Hemoglobins Region
 # nmStart, nmEnd = 500, 600
 # Fat Region
-nmStart, nmEnd = 880, 1043
+# nmStart, nmEnd = 880, 1043
 
  ## Load in SVM weights and Z-score them
 df_weights = pd.read_csv(svm_weights_csv_path)
