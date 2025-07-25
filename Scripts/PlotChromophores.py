@@ -11,14 +11,14 @@ import os
 
 dot_data = { # Name, column key, and filepath of the absorbance data
     'HbO2': ('HbO2 cm-1/M', 'Hb_HbO2 Absorbance.csv'),
-    'Hb': ('Hb cm-1/M', 'Hb_HbO2 Absorbance.csv'), 
+    # 'Hb': ('Hb cm-1/M', 'Hb_HbO2 Absorbance.csv'), 
     # 'H2O': ('H2O 1/cm', 'Water Absorbance.csv'),
-    'Pheomelanin': ('Pheomelanin cm-1/M', 'Pheomelanin.csv'),
-    'Eumelanin': ('Eumelanin cm-1/M', 'Eumelanin Absorbance.csv'),
+    # 'Pheomelanin': ('Pheomelanin cm-1/M', 'Pheomelanin.csv'),
+    # 'Eumelanin': ('Eumelanin cm-1/M', 'Eumelanin Absorbance.csv'),
     # 'fat': ('fat', 'Fat Absorbance.csv'),
-    'L': ('L', 'LM Absorbance.csv'),
-    'M': ('M', 'LM Absorbance.csv'),
-    'S': ('S', 'S Absorbance.csv'),
+    # 'L': ('L', 'LM Absorbance.csv'),
+    # 'M': ('M', 'LM Absorbance.csv'),
+    # 'S': ('S', 'S Absorbance.csv'),
     # 'D65': ('D65', 'CIE_std_illum_D65.csv'),
     }
 

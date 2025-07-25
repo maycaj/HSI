@@ -18,6 +18,8 @@ import shutil
 import json  # Add this import for saving parameters as JSON or text
 from sklearn.linear_model import SGDClassifier
 import plotly.graph_objects as go
+# import dask.dataframe as dd
+
 
 class DataLoader:
     @staticmethod
@@ -30,11 +32,13 @@ class DataLoader:
         '''
         print('Loading dataframe...')
         start_time = time.time()
-        # table = pv.read_csv(filepath)
+        # table = pv.read_csv(filepath)/
         # df = table.to_pandas()
         # table = None # Clear table after use
         df = pd.read_csv(filepath)
         print(f'Done loading dataframe ({np.round(time.time()-start_time,1)}s)')
+        df_medians = df.groupby(['ID','Foldername','FloatName']).median()
+        df_medians.reset_index(inplace=True)
         return df 
     
 class ChromDotSpectra:
@@ -99,7 +103,6 @@ class ChromDotSpectra:
         if scrambled_chrom: # if chromophores need to be scrambled
             # y_interp_chrom = np.random.rand(np.size(y_interp_chrom)) # Completely random values
             np.random.shuffle(y_interp_chrom) # Randomized order of chromophore only
-
 
         if plot:
             fig1 = go.Figure()
@@ -266,7 +269,7 @@ class PostProcessor:
         return fig, acc
 
 class SpectrumClassifier:
-    def __init__(self, run_num, save_folder, filepath, fracs, iterations, n_jobs, y_col, scale, optimize, stochastic, nm_start, nm_end, data_config, chrom_keys, d65_and_cones, scrambled_chrom):
+    def __init__(self, run_num, save_folder, filepath, fracs, iterations, n_jobs, y_col, scale, optimize, stochastic, nm_start, nm_end, data_config, chrom_keys, d65_and_cones, scrambled_chrom, apparent_abs):
         self.run_num = run_num
         self.save_folder = save_folder
         self.filepath = filepath
@@ -285,6 +288,7 @@ class SpectrumClassifier:
         self.scrambled_chrom = scrambled_chrom
         self.start_time = time.time()
         self.df = DataLoader.load_dataframe(filepath)
+        self.apparent_abs = apparent_abs
 
     def process_data(self):
         '''
@@ -296,7 +300,9 @@ class SpectrumClassifier:
             'Round 1: cellulitis or edemafalse': (11, 12, 15, 18, 20, 22, 23, 26, 34, 36), 
             'Round 1: peripheral or edemafalse': (1, 2, 5, 6, 7, 8, 9, 10, 13, 14, 19, 21, 24, 27, 29, 30, 31, 32, 33, 35, 37, 38, 39, 40),
             'Round 1 & 2: cellulitis or edemafalse': (11, 12, 15, 18, 20, 22, 23, 26, 34, 36, 45, 59, 61, 70),
-            'Round 1 & 2: peripheral or edemafalse': (1, 2, 5, 6, 7, 8, 9, 10, 13, 14, 19, 21, 24, 27, 29, 30, 31, 32, 33, 35, 37, 38, 39, 40, 41, 42, 43, 46, 47, 48, 49, 51, 53, 54, 55, 56, 57, 58, 60, 62, 63, 64, 65, 66, 67, 68, 69, 71, 72)
+            'Round 1 & 2: peripheral or edemafalse': (1, 2, 5, 6, 7, 8, 9, 10, 13, 14, 19, 21, 24, 27, 29, 30, 31, 32, 33, 35, 37, 38, 39, 40, 41, 42, 43, 46, 47, 48, 49, 51, 53, 54, 55, 56, 57, 58, 60, 62, 63, 64, 65, 66, 67, 68, 69, 71, 72),
+            'Round 1, 2, & 3: cellulitis/edemafalse + controls': (11, 12, 15, 18, 20, 22, 23, 26, 34, 36, 45, 59, 61, 70, 73, 76, 78, 83, 84, 85, 86, 88, 89, 90, 91),
+            'Round 1, 2, & 3: peripheral/edemafalse + controls': (1, 2, 5, 6, 7, 8, 9, 10, 13, 14, 19, 21, 24, 27, 29, 30, 31, 32, 33, 35, 37, 38, 39, 40, 41, 42, 43, 46, 47, 48, 49, 51, 53, 54, 55, 56, 57, 58, 60, 62, 63, 64, 65, 66, 67, 68, 69, 71, 72, 74, 75, 77, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90, 91), 
         }
         self.df = self.df[(self.df['ID'].isin(data_configs[data_config]) | (self.df['Foldername'] == 'EdemaFalse'))] # Keep all of EdemaFalse Data
         self.df = self.df[self.df['ID'] != 0] # Remove Dr. Pare
@@ -330,6 +336,14 @@ class SpectrumClassifier:
 
         # Do dot product if there are chromophores in chrom_keys
         self.chrom_interps = self.dot_product()
+        self.apparent_absorbance()
+
+    def apparent_absorbance(self):
+        '''
+        Converts reflectance data into apparent absorbance
+        '''
+        if self.apparent_abs == True: # Convert to apparent absorbance. A = -log10(R)
+            self.df[self.col_names] = -self.df[self.col_names].apply(np.log10)
 
     def dot_product(self):
         '''
@@ -654,22 +668,22 @@ if __name__ == '__main__':
     # Can run several different sets of parameters in sucession. parameters_dict is a dictionary or a list of dicionaries and each dictionary is a seperate model run
     parameter_dict = [
         {
-        # 'fracs':0.01, # Fraction of examples to include
-        # 'filepath':'/Users/cameronmay/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs.csv', # filepath of our dataset
-        'fracs': 1, 'filepath': '/Users/cameronmay/Documents/HSI/PatchCSVs/May_29_NOCR_FullRound1and2AllWLs_medians.csv', 
+        # 'fracs':0.001, # Fraction of examples to include
+        # 'filepath':'/Users/cameronmay/Downloads/Jul_19_NOCR_R1R2R3_AllWLS.csv', # filepath of our dataset
+        'fracs': 1, 'filepath': '/Users/cameronmay/Downloads/Jul_19_NOCR_R1R2R3_AllWLS_medians.csv', 
         'iterations':15, # number of iterations to run the model
-        'n_jobs':-1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
+        'n_jobs': 1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
         'y_col':'Foldername', # what column of the data from filepath to fit on
         'scale':True, # if using StandardScaler() for the SVM
         'optimize':False, # if optimizing, C, kernel, and gamma 
         'stochastic':False, # if using stochastic gradient descent (better for larger amounts of data). Else use linear SVM 
         'nm_start':451.18, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
         'nm_end': 1004.39, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
-        'data_config' : 'Round 1 & 2: peripheral or edemafalse', # which rounds and which disease group to fit on. Check data_configs for options
+        'data_config' : 'Round 1, 2, & 3: cellulitis/edemafalse + controls', # which rounds and which disease group to fit on. Check data_configs for options
         'chrom_keys': None, # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
         'd65_and_cones': True, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys. Also does not convert hyperspectral data to apparent absorbance, instead it keeps it in reflectance.
-        'scrambled_chrom': False}, # If scrambling the chromophores to be the same size but completely random
-
+        'scrambled_chrom': False, # If scrambling the chromophores to be the same size but completely random. Only affects output if chrom_keys is not None.
+        'apparent_abs': True}, # If converting from reflectance to apparent absorbance A = log10(1/R)
     ]
         
     replace_chromophores = False # If True, will run the model with each chromophore in chrom_keys. If False, will run the model with the chrom_keys specified in parameter_dict
