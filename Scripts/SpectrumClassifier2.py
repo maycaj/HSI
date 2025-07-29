@@ -343,6 +343,7 @@ class SpectrumClassifier:
         Converts reflectance data into apparent absorbance
         '''
         if self.apparent_abs == True: # Convert to apparent absorbance. A = -log10(R)
+            print('Finding apparent_absorbance...')
             self.df[self.col_names] = -self.df[self.col_names].apply(np.log10)
 
     def dot_product(self):
@@ -351,7 +352,6 @@ class SpectrumClassifier:
         Args:
             chrom_keys: chromophore keys to be fit on. If not none, chrom_keys are fit on instead of the wavelength columns.
         '''
-        print('Performing dot product')
         # nm_start_end_str = ['Wavelength_' + str(self.nm_start), 'Wavelength_' + str(self.nm_end)]
         dot_data = { # Name, column key, and filepath of the absorbance data
             'HbO2': ('HbO2 cm-1/M', '/Users/cameronmay/Documents/HSI/Absorbances/Hb_HbO2 Absorbance.csv'),
@@ -365,6 +365,7 @@ class SpectrumClassifier:
             'S': ('S', '/Users/cameronmay/Documents/HSI/Absorbances/S Absorbance.csv')
         }
         if self.chrom_keys is not None:
+            print('Performing dot product...')
             chrom_interps = pd.DataFrame([])
             ## Take the dot product of each chromophore, save output in df, and save each dot 
             for key in self.chrom_keys:
@@ -668,21 +669,21 @@ if __name__ == '__main__':
     # Can run several different sets of parameters in sucession. parameters_dict is a dictionary or a list of dicionaries and each dictionary is a seperate model run
     parameter_dict = [
         {
-        # 'fracs':0.001, # Fraction of examples to include
-        # 'filepath':'/Users/cameronmay/Downloads/Jul_19_NOCR_R1R2R3_AllWLS.csv', # filepath of our dataset
-        'fracs': 1, 'filepath': '/Users/cameronmay/Downloads/Jul_19_NOCR_R1R2R3_AllWLS_medians.csv', 
-        'iterations':15, # number of iterations to run the model
-        'n_jobs': 1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
+        'fracs':0.005, # Fraction of examples to include
+        'filepath':'/Users/cameronmay/Downloads/Jul_19_NOCR_R1R2R3_AllWLS.csv', # filepath of our dataset
+        # 'fracs': 1, 'filepath': '/Users/cameronmay/Downloads/Jul_19_NOCR_R1R2R3_AllWLS_medians.csv', 
+        'iterations':10, # number of iterations to run the model
+        'n_jobs': -1, # 1 is for running normally, any number above 1 is for parallelization, and -1 takes all of the available CPUs
         'y_col':'Foldername', # what column of the data from filepath to fit on
         'scale':True, # if using StandardScaler() for the SVM
         'optimize':False, # if optimizing, C, kernel, and gamma 
         'stochastic':False, # if using stochastic gradient descent (better for larger amounts of data). Else use linear SVM 
         'nm_start':451.18, #451.18 # the minimum wavelength to include in model fits. Is rounded to nearest camera wavelength. 
-        'nm_end': 1004.39, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
-        'data_config' : 'Round 1, 2, & 3: cellulitis/edemafalse + controls', # which rounds and which disease group to fit on. Check data_configs for options
+        'nm_end': 954.83, #954.83 # the maximum wavelength to include in model fits. Is rounded to nearest camera wavelength 
+        'data_config' : 'Round 1, 2, & 3: peripheral/edemafalse + controls', # which rounds and which disease group to fit on. Check data_configs for options
         'chrom_keys': None, # None if using the camera wavelengths, else using the dot product of the skin chromophore as the features to fit on. The keys of dot_data are the options: ['HbO2', 'Hb', 'H2O', 'Pheomelanin', 'Eumelanin', 'fat', 'L', 'M', 'S'].
-        'd65_and_cones': True, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys. Also does not convert hyperspectral data to apparent absorbance, instead it keeps it in reflectance.
-        'scrambled_chrom': False, # If scrambling the chromophores to be the same size but completely random. Only affects output if chrom_keys is not None.
+        'd65_and_cones': False, # If scaling the data by the daylight axis (d65). Used in conjunction with ['L','M','S'] as chrom_keys. Also does not convert hyperspectral data to apparent absorbance, instead it keeps it in reflectance.
+        'scrambled_chrom': False, # If scrambling the chromophores to be the same size but completely random
         'apparent_abs': True}, # If converting from reflectance to apparent absorbance A = log10(1/R)
     ]
         

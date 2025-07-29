@@ -10,5 +10,22 @@
                 "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2"
             }
         }
+    ],
+    "multiCommand.commands": [
+  {
+    "command": "multiCommand.closeSidebars",
+    "sequence": [
+      "workbench.action.closeSidebar",
+      "workbench.action.closeAuxiliaryBar",
+       "workbench.action.closePanel"
     ]
+  },
+  {
+    "command": "multiCommand.openSidebars",
+    "sequence": [
+      "workbench.action.toggleAuxiliaryBar",
+      "workbench.action.togglePanel"
+    ]
+  }
+]
 }

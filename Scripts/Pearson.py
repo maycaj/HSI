@@ -10,16 +10,15 @@ import matplotlib.pyplot as plt
 import pathlib as path
 import shutil
 import sys
-
  
 #CONFIGURATION
 # Path to the SVM weights CSV file and chromophore datasets
-svm_weights_csv_path = path.PosixPath('/Users/cameronmay/Downloads/SpectrumClassifier2 2025-07-25 14 36/Run 0/coefs__acc=84.0pct=1.csv')
+svm_weights_csv_path = path.PosixPath('/Users/cameronmay/Downloads/SpectrumClassifier2 2025-07-25 10 00/Run 0/coefs__acc=68.5pct=1.csv')
 dot_data = { # Name, column key, and filepath of the absorbance data
-    'HbO2': ('HbO2 cm-1/M', 'Hb_HbO2 Absorbance.csv'),
-    'Hb': ('Hb cm-1/M', 'Hb_HbO2 Absorbance.csv'), 
+    # 'HbO2': ('HbO2 cm-1/M', 'Hb_HbO2 Absorbance.csv'),
+    # 'Hb': ('Hb cm-1/M', 'Hb_HbO2 Absorbance.csv'), 
     # 'Hb_diff': ('Hb_diff', 'Hb_HbO2 Absorbance.csv'), 
-    # 'H2O': ('H2O 1/cm', 'Water Absorbance.csv'), # is out of range below 667
+    'H2O': ('H2O 1/cm', 'Water Absorbance.csv'), # is out of range below 667
     # 'Pheomelanin': ('Pheomelanin cm-1/M', 'Pheomelanin.csv'),
     # 'Eumelanin': ('Eumelanin cm-1/M', 'Eumelanin Absorbance.csv'),
     'fat': ('fat', 'Fat Absorbance.csv'),
@@ -30,15 +29,14 @@ dot_data = { # Name, column key, and filepath of the absorbance data
     }
 absorb_folder = path.PosixPath('/Users/cameronmay/Documents/HSI/Absorbances')
 absolute_value = False  # If True, use the absolute value of the SVM weights; if False, use the raw SVM weights
-negate = False  # If True, negate the SVM weights before plotting
 
 ## Specify the wavelength range for the analysis
 # All wavelengths
-nmStart, nmEnd = 375, 1043
+# nmStart, nmEnd = 375, 1043
 # Hemoglobins Region
 # nmStart, nmEnd = 500, 600
 # Fat Region
-# nmStart, nmEnd = 880, 1043
+nmStart, nmEnd = 880, 1043
 
  ## Load in SVM weights and Z-score them
 df_weights = pd.read_csv(svm_weights_csv_path)
@@ -50,8 +48,6 @@ if absolute_value:
     median_weights = df_weights_T['median_weight'].abs()
 else:
     median_weights = df_weights_T['median_weight']
-if negate:
-    median_weights = -median_weights
 
 w_zscore = (median_weights - median_weights.mean()) / median_weights.std()
 df_weights_plot = pd.DataFrame({
