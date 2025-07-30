@@ -26,6 +26,7 @@ import re
 from sklearn.model_selection import KFold
 from joblib import Parallel, delayed
 import time
+import json
 
 
 class utilities:
@@ -135,8 +136,207 @@ class dataExplorer:
             )             
             fig.update_layout({'title':f'{n_show*2} Sample Images. Squares are labeled where blue is the middle of the top left pixel and white middle of the bottom right pixel'})        
         fig.show()
+    @staticmethod
+    def plot_bar(test_results, output_dir, data_config):
+        '''
+        Args:
+            test_results: dataframe with actual labels, ID numbers, correct
+        Bootstrapp across iterations and make a bar chart. X: ID and foldername, Y: Accuracy with bootstrapped error bars
+        '''
+        # Within the same 'Actual','ID', and 'Correct' find the mean
+        group = test_results[['Iteration','Actual','ID','Correct']].groupby(['ID','Actual','Iteration']).mean()
+        group.reset_index(inplace=True)
+
+        # Add a row to group which represents the entire EdemaTrue and EdemaFalse category
+        categories = group.groupby('Actual').mean()
+        categories.reset_index(inplace=True)
+        categories['ID'] = -1 
+        group = pd.concat([group,categories])
+
+        # Add a row that represents the entire dataset. Use -1 to represent both classes
+        all_IDs = pd.DataFrame({'ID': -1, 'Actual':-1, 'Iteration':-1, 'Correct': group['Correct'].mean()}, index=[0])
+        group = pd.concat([group,all_IDs])
+
+        # Bootstrap within the same 'Actual','ID', and 'Correct' which bootstraps across iterations
+        bootstrap_group = group.groupby(['Actual','ID'])
+        bootstrap_values = bootstrap_group.apply(lambda x: pd.Series(bootstrapp(x['Correct'])), 
+                                                include_groups=False)
+        bootstrap_values.columns = ['Lower_pct','Upper_pct']
+        bootstrap_values.reset_index(inplace=True)
+
+        # Find the average 'Correct' across all iterations
+        chart_values = group.groupby(['Actual','ID']).mean().reset_index() # Find the mean across iterations
+        chart_values = chart_values.drop('Iteration',axis=1)
+
+        # Merge the bootstrapped values with the average 'Correct' across iterations
+        chart_values = chart_values.merge(bootstrap_values, how='left')
+
+        # Convert percentiles to the length of the error bars
+        chart_values['Lower_error'] = np.abs(chart_values['Lower_pct'] - chart_values['Correct'])
+        chart_values['Upper_error'] = np.abs(chart_values['Upper_pct'] - chart_values['Correct'])
+
+        # Make labels and sort by them so that the charts are clean
+        chart_values['Label'] = 'ID = ' + chart_values['ID'].astype(str) + ' Category = ' + chart_values['Actual'].astype(str)
+        chart_values = chart_values.sort_values(by='Label')
+
+        fig = go.Figure(
+            data=[
+                go.Bar(
+                    y=chart_values['Correct'],
+                    x=chart_values['Label'],
+                    marker_color='grey',  # <-- Set bar color to grey
+                    error_y=dict(
+                        type='data',
+                        symmetric=False,
+                        array = chart_values['Upper_error'],
+                        arrayminus = chart_values['Lower_error'],))])
+        fig.update_layout(
+            title=f'Accuracies by ID and Category (ID = -1 means all IDs & Category = -1 means both categories)\n{data_config}',
+            xaxis_title='ID & Category (0 = EdemaFalse, 1 = EdemaTrue)',
+            yaxis_title='Accuracy')
+        fig.write_image(output_dir / 'bar_chart.pdf')
+        fig.show()
+
+    @staticmethod
+    def plot_img_results(test_results, output_dir, save_img, square_size):
+        '''
+        Plots the correct (green) and incorrect (red) patches over the image
+        Args: 
+            test_results: Dataframe with information on x, y, and if it was correctly classified
+        '''
+        tested_paths = test_results['Filepath'].unique()
+
+        if save_img:
+            # If save_img, save the images overlaid with correct and incorrect predictions 
+            for tested_path in tested_paths:
+                data = np.load(tested_path,allow_pickle=True).item()
+                npy = data['hyperspectral_data']
+                img = npy[:,:,[60,30,20]]
+                img = (255 * (img - img.min()) / (np.ptp(img) + 1e-8)).astype(np.uint8)  # Normalize and convert to uint8
+                correct = test_results[(test_results['Filepath'] == tested_path) & (test_results['Correct'] == True)]
+                incorrect = test_results[(test_results['Filepath'] == tested_path) & (test_results['Correct'] == False)]
+                x0_c, y0_c, x1_c, y1_c = correct['x0'], correct['y0'], correct['x1'], correct['y1']
+                x0_i, y0_i, x1_i, y1_i = incorrect['x0'], incorrect['y0'], incorrect['x1'], incorrect['y1']
+
+                matplotlib.use('Agg') # Use non-interactive backend
+                # If there are any points to plot
+                if len(x0_c) != 0 or len(x0_i) != 0:
+                    plt.imshow(img)
+
+                    # If there are correct points, plot them
+                    if len(x0_c) != 0:
+                        for x, y in zip(x0_c, y0_c): 
+                            rect = plt.Rectangle((x, y), square_size, square_size, linewidth=1,
+                                                edgecolor='green', facecolor='green', alpha=0.3)
+                            plt.gca().add_patch(rect)
+                    # If there are incorrect points, plot them 
+                    if len(x0_i) != 0:
+                        for x, y in zip(x0_i, y0_i): 
+                            rect = plt.Rectangle((x, y), square_size, square_size, linewidth=1,
+                                                edgecolor='red', facecolor='red', alpha=0.3)
+                            plt.gca().add_patch(rect)
+                    plt.title(f'Img: {Path(tested_path).stem}\n Cat: {Path(tested_path).parent} \nRed means incorrect, Green means correct')
+                    os.makedirs(output_dir/'maps', exist_ok=True)
+                    plt.tight_layout()
+                    plt.savefig(output_dir / 'maps' / Path(tested_path).stem)
+                    plt.close()
+
+
+        # Don't plot more than 6 images for space reasons
+        tested_paths = np.random.choice(tested_paths, size=5, replace=False)
+
+        # Find all leg accuracies
+        leg_accs = test_results[['Actual','ID','Correct']].groupby(['Actual','ID']).mean()
+        leg_accs.reset_index(inplace=True)
+
+        subplot_titles = []
+        for tested_path in tested_paths:
+            name = Path(tested_path).name
+
+            # Find if the example is in the edemaFalse or the edemaTrue folder
+            category = Path(tested_path).parent.name
+            actual = 0 if re.search('EdemaFalse', category) else 1 if re.search('EdemaTrue', category) else None
+            if category == None:
+                raise(ValueError('Category name is not EdemaFalse nor EdemaTrue. Should be one of those'))
+            ID = int(re.search(r'\d+',name).group())
+
+            # Find the accuracy for the current image
+            leg_acc = leg_accs[(leg_accs['ID'] == ID) & (leg_accs['Actual']== actual)]
+            leg_acc = f"{round(leg_acc['Correct'].values[0], 2)}"
+
+            subplot_titles.append(f'ID: {ID} <br> Cat: {category} <br> Acc: {leg_acc}')
+            pass
+
+        fig = make_subplots(rows=1, cols=len(tested_paths), subplot_titles=subplot_titles)
         
+        # Plot each of the images that were tested over and plot markers over them if they were correct
+        for i, tested_path in enumerate(tested_paths):
+            data = np.load(tested_path,allow_pickle=True).item()
+            npy = data['hyperspectral_data']
+            img = npy[:,:,[60,30,20]]
+            img = (255 * (img - img.min()) / (np.ptp(img) + 1e-8)).astype(np.uint8)  # Normalize and convert to uint8
+            fig.add_trace(go.Image(z=img), row=1, col=i+1,)
+            correct = test_results[(test_results['Filepath'] == tested_path) & (test_results['Correct'] == True)]
+            incorrect = test_results[(test_results['Filepath'] == tested_path) & (test_results['Correct'] == False)]
+            x0_c, y0_c, x1_c, y1_c = correct['x0'], correct['y0'], correct['x1'], correct['y1']
+            x0_i, y0_i, x1_i, y1_i = incorrect['x0'], incorrect['y0'], incorrect['x1'], incorrect['y1']
+
+            # If correct, add green markers for top left of square
+            fig.add_trace(
+                go.Scatter(
+                    x=x0_c,
+                    y=y0_c,
+                    mode="markers",
+                    marker=dict(color="green", size=4, opacity=1),
+                    showlegend=True
+                ),
+                row=1, col=i+1
+            )     
+            # If correct, add green markers for bottom right of square
+            fig.add_trace(
+                go.Scatter(
+                    x=x1_c-1, # When npy is sliced, the end index iteself is not included. Thus we subtract 1 to show which patches we are including
+                    y=y1_c-1,
+                    mode="markers",
+                    marker=dict(color="green", size=3, opacity=1),
+                    showlegend=True
+                ),
+                row=1, col=i+1
+            )     
+            # If incorrect, add red markers for top left of square
+            fig.add_trace(
+                go.Scatter(
+                    x=x0_i,
+                    y=y0_i,
+                    mode="markers",
+                    marker=dict(color="red", size=4, opacity=1),
+                    showlegend=True
+                ),
+                row=1, col=i+1
+            )     
+            # If incorrect, add red markers for bottom right of square
+            fig.add_trace(
+                go.Scatter(
+                    x=x1_i-1, # When npy is sliced, the end index iteself is not included. Thus we subtract 1 to show which patches we are including
+                    y=y1_i-1,
+                    mode="markers",
+                    marker=dict(color="red", size=3, opacity=1),
+                    showlegend=True
+                ),
+                row=1, col=i+1
+            )          
+            fig.update_layout(
+                title=f'{len(tested_paths)} Tested Images. Squares are labeled where red are the incorrect squares and green are the correct squares',
+                margin=dict(t=150, b=50, l=50, r=50),  # Increase top margin for title and subplot titles
+                height=600,  # Adjust overall figure height
+                title_y=0.95,  # Position title higher
+            )   
+
+
+        fig.show()
+
 class HypercubeDataset(Dataset):
+    '''Initializes a pytorch dataset. Takes the .npy files and divides them into patches using utilities.get_patches'''
     def __init__(self, file_paths, frac, label, square_size=5):
         self.file_paths = file_paths
         self.frac = frac
@@ -298,21 +498,21 @@ def train_model(fold_num, train_IDs, test_IDs, true_files,
 
         # Append epoch loss and accuracy for plotting
         epoch_losses.append(epoch_loss)
-        epoch_acc.append(epoch_results['Correct'].mean())
+        epoch_acc.append(epoch_results['Correct'].mean()*100)
 
         print(f'Epoch {epoch+1}/{epochs}, Loss: {epoch_loss:.4f}')
-        print(f'Epoch {epoch+1}/{epochs}, Test Accuracy: {epoch_results['Correct'].mean()}')
+        print(f'Epoch {epoch+1}/{epochs}, Test Accuracy: {epoch_results['Correct'].mean()*100}')
 
 
     # Plot training loss over epochs
     if show_training:
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=[i for i in range(1, epochs + 1)], y=epoch_losses, name='Epoch Loss'))
-        fig.add_trace(go.Scatter(x=[i for i in range(1, epochs + 1)], y=epoch_acc, name='Epoch Accuracy'))
+        fig.add_trace(go.Scatter(x=[i for i in range(1, epochs + 1)], y=epoch_acc, name='Epoch Accuracy (%)'))
         fig.update_layout(
-            title='Training Loss over epochs',
+            title=f'Training Loss over epochs. Fold: {fold_num}',
             xaxis_title='Epochs')
-        fig.write_image(output_dir / "training_loss.png")
+        fig.write_image(output_dir / f"training_loss_fold{fold_num}.png")
         fig.show()
 
     print(f'Training complete, now testing...')
@@ -334,264 +534,134 @@ def bootstrapp(series, CI=95):
     upper_value = np.percentile(means, upper_percentile)
     return lower_value, upper_value
 
-def plot_bar(test_results):
-    '''
-    Args:
-        test_results: dataframe with actual labels, ID numbers, correct
-    Bootstrapp across iterations and make a bar chart. X: ID and foldername, Y: Accuracy with bootstrapped error bars
-    '''
+class CNN_pipeline:
+    def __init__(self, true_path, false_path, show_preview, frac, random_state, n_jobs, iterations, n_splits, epochs, batch_size, save_img, square_size, show_training, data_config):
+        self.true_path = true_path
+        self.false_path = false_path
+        self.show_preview = show_preview
+        self.frac = frac
+        self.random_state = random_state
+        self.n_jobs = n_jobs
+        self.iterations = iterations
+        self.n_splits = n_splits
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.save_img = save_img
+        self.square_size = square_size
+        self.show_training = show_training
+        self.data_config = data_config
 
-    # Within the same 'Actual','ID', and 'Correct' find the mean
-    group = test_results[['Iteration','Actual','ID','Correct']].groupby(['ID','Actual','Iteration']).mean()
-    group.reset_index(inplace=True)
+    def process_data(self):
+        '''
+        Process files, find IDs, create output directory, set up Kfold, and show preview if requested
+        Args:
+            true_path: Path to the directory containing true data files
+            false_path: Path to the directory containing false data files
+            show_preview: Whether to show a preview of the data   
+        '''
 
-    # Add a row to group which represents the entire EdemaTrue and EdemaFalse category
-    categories = group.groupby('Actual').mean()
-    categories.reset_index(inplace=True)
-    categories['ID'] = -1 
-    group = pd.concat([group,categories])
+        self.start_time = time.time()    
 
-    # Add a row that represents the entire dataset. Use -1 to represent both classes
-    all_IDs = pd.DataFrame({'ID': -1, 'Actual':-1, 'Iteration':-1, 'Correct': group['Correct'].mean()}, index=[0])
-    group = pd.concat([group,all_IDs])
+        # Find the necissary file paths and patient IDs
+        self.true_files = [file for file in self.true_path.iterdir() if file.is_file() and file.suffix == '.npy']
+        self.false_files = [file for file in self.false_path.iterdir() if file.is_file() and file.suffix == '.npy']
+        true_IDs = [int(re.search(r'\d+',file.name).group()) for file in self.true_files ]
+        false_IDs = [int(re.search(r'\d+',file.name).group()) for file in self.false_files]
 
-    # Bootstrap within the same 'Actual','ID', and 'Correct' which bootstraps across iterations
-    bootstrap_group = group.groupby(['Actual','ID'])
-    bootstrap_values = bootstrap_group.apply(lambda x: pd.Series(bootstrapp(x['Correct'])), 
-                                             include_groups=False)
-    bootstrap_values.columns = ['Lower_pct','Upper_pct']
-    bootstrap_values.reset_index(inplace=True)
+        # Filter the true_IDs using the data_config
+        data_configs = {
+            'Round 1: cellulitis or edemafalse': (11, 12, 15, 18, 20, 22, 23, 26, 34, 36), 
+            'Round 1: peripheral or edemafalse': (1, 2, 5, 6, 7, 8, 9, 10, 13, 14, 19, 21, 24, 27, 29, 30, 31, 32, 33, 35, 37, 38, 39, 40),
+            'Round 1 & 2: cellulitis or edemafalse': (11, 12, 15, 18, 20, 22, 23, 26, 34, 36, 45, 59, 61, 70),
+            'Round 1 & 2: peripheral or edemafalse': (1, 2, 5, 6, 7, 8, 9, 10, 13, 14, 19, 21, 24, 27, 29, 30, 31, 32, 33, 35, 37, 38, 39, 40, 41, 42, 43, 46, 47, 48, 49, 51, 53, 54, 55, 56, 57, 58, 60, 62, 63, 64, 65, 66, 67, 68, 69, 71, 72),
+            'Round 1, 2, & 3: cellulitis/edemafalse + controls': (11, 12, 15, 18, 20, 22, 23, 26, 34, 36, 45, 59, 61, 70, 73, 76, 78, 83, 84, 85, 86, 88, 89, 90, 91),
+            'Round 1, 2, & 3: peripheral/edemafalse + controls': (1, 2, 5, 6, 7, 8, 9, 10, 13, 14, 19, 21, 24, 27, 29, 30, 31, 32, 33, 35, 37, 38, 39, 40, 41, 42, 43, 46, 47, 48, 49, 51, 53, 54, 55, 56, 57, 58, 60, 62, 63, 64, 65, 66, 67, 68, 69, 71, 72, 74, 75, 77, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90, 91), 
+        }
+        true_IDs = [ID for ID in true_IDs if ID in data_configs[self.data_config]]
+        IDs = true_IDs + false_IDs
+        self.IDs = np.unique(IDs)
 
-    # Find the average 'Correct' across all iterations
-    chart_values = group.groupby(['Actual','ID']).mean().reset_index() # Find the mean across iterations
-    chart_values = chart_values.drop('Iteration',axis=1)
+        # Create a timestamped folder in the Downloads directory
+        self.timestamp = datetime.now().strftime("%Y-%m-%d %H %M")
+        self.output_dir = Path(f'/Users/cameronmay/Downloads/CNN {self.timestamp}')
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Merge the bootstrapped values with the average 'Correct' across iterations
-    chart_values = chart_values.merge(bootstrap_values, how='left')
+        # Save parameters in .txt file
+        parameters_file = self.output_dir / 'parameters.txt'
+        serializable_dict = {k: str(v) if isinstance(v, Path) else v for k, v in parameter_dict.items()} # Convert posixpaths to str so we can save
+        with open(parameters_file, 'w') as f:
+            json.dump(serializable_dict, f, indent=4)
 
-    # Convert percentiles to the length of the error bars
-    chart_values['Lower_error'] = np.abs(chart_values['Lower_pct'] - chart_values['Correct'])
-    chart_values['Upper_error'] = np.abs(chart_values['Upper_pct'] - chart_values['Correct'])
+        # Save a copy of the script to the output directory
+        script_path = Path(__file__)
+        shutil.copy(script_path, self.output_dir / script_path.name)
 
-    # Make labels and sort by them so that the charts are clean
-    chart_values['Label'] = 'ID = ' + chart_values['ID'].astype(str) + ' Category = ' + chart_values['Actual'].astype(str)
-    chart_values = chart_values.sort_values(by='Label')
+        if self.n_splits == 'ID':
+            self.n_splits = len(self.IDs)
+        self.kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=self.random_state)
 
-    fig = go.Figure(
-        data=[
-            go.Bar(
-                y=chart_values['Correct'],
-                x=chart_values['Label'],
-                marker_color='grey',  # <-- Set bar color to grey
-                error_y=dict(
-                    type='data',
-                    symmetric=False,
-                    array = chart_values['Upper_error'],
-                    arrayminus = chart_values['Lower_error'],))])
-    fig.update_layout(
-        title='Accuracies by ID and Category (ID = -1 means all IDs & Category = -1 means both categories)',
-        xaxis_title='ID & Category (0 = EdemaFalse, 1 = EdemaTrue)',
-        yaxis_title='Accuracy')
-    fig.show()
-    
-def plot_img_results(test_results, output_dir, save_img, square_size):
-    '''
-    Plots the correct (green) and incorrect (red) patches over the image
-    Args: 
-        test_results: Dataframe with information on x, y, and if it was correctly classified
-    '''
-    tested_paths = test_results['Filepath'].unique()
+        # Make sure to set the default renderer for Plotly. Show a preview of the patches that will be used in the analysis
+        pio.renderers.default = 'browser'
+        if self.show_preview:
+            print('Showing preview...')
+            dataExplorer.show_input(self.true_files, self.false_files, self.frac)
 
-    # Don't plot more than 6 images for space reasons
-    tested_paths = np.random.choice(tested_paths, size=5, replace=False)
+    def train(self):
+        '''
+        Train the CNN and output test_results (Location, ID, Actual, Predicted, Correct, x0, y0, x1, y1)
+        '''
+        self.test_results = pd.DataFrame([])
+        for i in range (self.iterations):
+            print(f'\n\n---------Working on iteration {i}---------')
+            # process each fold in parallel
+            test_results_fold = Parallel(n_jobs=self.n_jobs, backend='loky')( 
+                delayed(train_model)(fold_num, self.IDs[train_index], self.IDs[test_index], self.true_files,
+                                    self.false_files, i, self.frac, self.random_state, self.output_dir, square_size=self.square_size, show_training=self.show_training, epochs=self.epochs,
+                                        batch_size=self.batch_size, learning_rate=0.001, use_resnet=False)
+                for fold_num, (train_index, test_index) in enumerate(self.kf.split(self.IDs))
+            )
+            test_results_iteration = pd.concat(test_results_fold, ignore_index=True)
 
-    # Find all leg accuracies
-    leg_accs = test_results[['Actual','ID','Correct']].groupby(['Actual','ID']).mean()
-    leg_accs.reset_index(inplace=True)
+            # Add all of testing results one dataframe
+            self.test_results = pd.concat([self.test_results, test_results_iteration])        # test_results = train_model(train_true, train_false, test_true, test_false, frac, use_resnet=True)
 
-    subplot_titles = []
-    for tested_path in tested_paths:
-        name = Path(tested_path).name
+    def evaluate(self):
+        '''Evaluate the model and save results'''
 
-        # Find if the example is in the edemaFalse or the edemaTrue folder
-        category = Path(tested_path).parent.name
-        actual = 0 if re.search('EdemaFalse', category) else 1 if re.search('EdemaTrue', category) else None
-        if category == None:
-            raise(ValueError('Category name is not EdemaFalse nor EdemaTrue. Should be one of those'))
-        ID = int(re.search(r'\d+',name).group())
+        print('Saving and plotting results...')
+        self.test_results.to_csv(self.output_dir / 'test_outputs.csv')
+        print(f'Test results saved to {self.output_dir / 'test_outputs.csv'}')
+        dataExplorer.plot_bar(self.test_results, self.output_dir, self.data_config)
+        dataExplorer.plot_img_results(self.test_results, self.output_dir, self.save_img, self.square_size)
+        end_time = time.time()
+        print(f'Done with Training \n Total time: {end_time - self.start_time}')
 
-        # Find the accuracy for the current image
-        leg_acc = leg_accs[(leg_accs['ID'] == ID) & (leg_accs['Actual']== actual)]
-        leg_acc = f"{round(leg_acc['Correct'].values[0], 2)}"
-
-        subplot_titles.append(f'ID: {ID} <br> Cat: {category} <br> Acc: {leg_acc}')
-        pass
-
-    fig = make_subplots(rows=1, cols=len(tested_paths), subplot_titles=subplot_titles)
-    
-    # Plot each of the images that were tested over and plot markers over them if they were correct
-    for i, tested_path in enumerate(tested_paths):
-        data = np.load(tested_path,allow_pickle=True).item()
-        npy = data['hyperspectral_data']
-        img = npy[:,:,[60,30,20]]
-        img = (255 * (img - img.min()) / (np.ptp(img) + 1e-8)).astype(np.uint8)  # Normalize and convert to uint8
-        fig.add_trace(go.Image(z=img), row=1, col=i+1,)
-        correct = test_results[(test_results['Filepath'] == tested_path) & (test_results['Correct'] == True)]
-        incorrect = test_results[(test_results['Filepath'] == tested_path) & (test_results['Correct'] == False)]
-        x0_c, y0_c, x1_c, y1_c = correct['x0'], correct['y0'], correct['x1'], correct['y1']
-        x0_i, y0_i, x1_i, y1_i = incorrect['x0'], incorrect['y0'], incorrect['x1'], incorrect['y1']
-
-        # If correct, add green markers for top left of square
-        fig.add_trace(
-            go.Scatter(
-                x=x0_c,
-                y=y0_c,
-                mode="markers",
-                marker=dict(color="green", size=4, opacity=1),
-                showlegend=True
-            ),
-            row=1, col=i+1
-        )     
-        # If correct, add green markers for bottom right of square
-        fig.add_trace(
-            go.Scatter(
-                x=x1_c-1, # When npy is sliced, the end index iteself is not included. Thus we subtract 1 to show which patches we are including
-                y=y1_c-1,
-                mode="markers",
-                marker=dict(color="green", size=3, opacity=1),
-                showlegend=True
-            ),
-            row=1, col=i+1
-        )     
-        # If incorrect, add red markers for top left of square
-        fig.add_trace(
-            go.Scatter(
-                x=x0_i,
-                y=y0_i,
-                mode="markers",
-                marker=dict(color="red", size=4, opacity=1),
-                showlegend=True
-            ),
-            row=1, col=i+1
-        )     
-        # If incorrect, add red markers for bottom right of square
-        fig.add_trace(
-            go.Scatter(
-                x=x1_i-1, # When npy is sliced, the end index iteself is not included. Thus we subtract 1 to show which patches we are including
-                y=y1_i-1,
-                mode="markers",
-                marker=dict(color="red", size=3, opacity=1),
-                showlegend=True
-            ),
-            row=1, col=i+1
-        )          
-        fig.update_layout(
-            title=f'{len(tested_paths)} Tested Images. Squares are labeled where red are the incorrect squares and green are the correct squares',
-            margin=dict(t=150, b=50, l=50, r=50),  # Increase top margin for title and subplot titles
-            height=600,  # Adjust overall figure height
-            title_y=0.95,  # Position title higher
-        )   
-
-        # If save_img, save the images overlaid with correct and incorrect predictions 
-        if save_img:
-            matplotlib.use('Agg') # Use non-interactive backend
-            # If there are any points to plot
-            if len(x0_c) != 0 or len(x0_i) != 0:
-                plt.imshow(img)
-                square_size = abs(x0_c.iloc[0]-x1_c.iloc[0])
-                # If there are correct points, plot them
-                if len(x0_c) != 0:
-                    for x, y in zip(x0_c, y0_c): 
-                        rect = plt.Rectangle((x, y), square_size, square_size, linewidth=1,
-                                            edgecolor='green', facecolor='green', alpha=0.3)
-                        plt.gca().add_patch(rect)
-                # If there are incorrect points, plot them 
-                if len(x0_i) != 0:
-                    for x, y in zip(x0_i, y0_i): 
-                        rect = plt.Rectangle((x, y), square_size, square_size, linewidth=1,
-                                            edgecolor='red', facecolor='red', alpha=0.3)
-                        plt.gca().add_patch(rect)
-                plt.title(f'Img: {Path(tested_path).stem} \nRed means incorrect, Green means correct')
-                os.makedirs(output_dir/'maps', exist_ok=True)
-                plt.savefig(output_dir / 'maps' / Path(tested_path).stem)
-                plt.close()
-    fig.show()
+    def run(self):
+        ''' Main method to execute the entire pipeline'''
+        self.process_data()
+        self.train()
+        self.evaluate()
 
 
 if __name__ == '__main__':
-    # Define paths to the true and false data directories
-    true_path = Path('/Users/cameronmay/Documents/HSI/npy/Round 3 all/EdemaTrueCrops RGB 7-14-2025Npy') # Path('/Users/cameronmay/Documents/HSI/npy/EdemaTrue')
-    false_path = Path('/Users/cameronmay/Documents/HSI/npy/Round 3 all/EdemaFalseCrops RGB 7-14-2025Npy') # Path('/Users/cameronmay/Documents/HSI/npy/EdemaFalse')
-    show_preview = False  # Set to True to show the data explorer preview
-    frac = 0.0001 # Fraction of squares to include in the analysis
-    random_state = np.random.randint(0, 4294967295) # Seed to randomize the input. For reproducability use a number like 42, otherwise use np.random.randint(0, 4294967295)
-    n_jobs = 1 # -1 uses as many CPUs as there are available. Positive numbers reflect the number of CPUs used
-    iterations = 1 # Number of iterations to run the entire model 
-    n_splits = 2 # 'ID' if the number of splits are the same as the number of IDs. Otherwise provide a number greater than 2
-    epochs = 1
-    batch_size = 16
-    save_img = True
-    square_size = 5
+    parameter_dicts = [{'true_path': Path('/Users/cameronmay/Documents/HSI/npy/Round 3 all/EdemaTrueCrops RGB 7-14-2025Npy'), 
+                  'false_path': Path('/Users/cameronmay/Documents/HSI/npy/Round 3 all/EdemaFalseCrops RGB 7-14-2025Npy'), 
+                  'show_preview': True, # Set to True to show the data explorer preview
+                  'frac': 0.01, # Fraction of squares to include in the analysis
+                  'random_state': np.random.randint(0, 4294967295), # Seed to randomize the input. For reproducability use a number like 42, otherwise use np.random.randint(0, 4294967295)
+                  'n_jobs': -1, # -1 uses as many CPUs as there are available. Positive numbers reflect the number of CPUs used
+                  'iterations': 3, # Number of iterations to run the entire model 
+                  'n_splits': 'ID', # 'ID' if the number of splits are the same as the number of IDs. Otherwise provide a number greater than 2
+                  'epochs': 10, # Number of epochs to train the model
+                  'batch_size': 16, # Batch size for training
+                  'save_img': True, # Whether or not to save the images with correct and incorrect predictions
+                  'square_size': 5, # Size of the square patches to extract from the hyperspectral images
+                  'show_training': True, # Whether or not to plot accuracy over epochs
+                  'data_config': 'Round 1, 2, & 3: peripheral/edemafalse + controls', # What data to include. The keys of data_configs are the options for what can be put here.
+                  }] 
 
-    start_time = time.time()
-    # Find the necissary file paths and patient IDs
-    true_files = [file for file in true_path.iterdir() if file.is_file() and file.suffix == '.npy']
-    false_files = [file for file in false_path.iterdir() if file.is_file() and file.suffix == '.npy']
-    true_IDs = [int(re.search(r'\d+',file.name).group()) for file in true_files ]
-    false_IDs = [int(re.search(r'\d+',file.name).group()) for file in false_files]
-    IDs = true_IDs + false_IDs
-    IDs = np.unique(IDs)
-
-    # Create a timestamped folder in the Downloads directory
-    timestamp = datetime.now().strftime("%Y-%m-%d %H %M")
-    output_dir = Path(f'/Users/cameronmay/Downloads/CNN {timestamp}')
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save a copy of the script to the output directory
-    script_path = Path(__file__)
-    shutil.copy(script_path, output_dir / script_path.name)
-
-    # # Split data into training and testing sets
-    # train_true, test_true = train_test_split(true_files, test_size=0.2, random_state=random_state)
-    # train_false, test_false = train_test_split(false_files, test_size=0.2, random_state=random_state)
-
-    # # Combine training and testing sets
-    # train_files = train_true + train_false
-    # test_files = test_true + test_false
-
-    if n_splits == 'ID':
-        n_splits = len(IDs)
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-
-    # Make sure to set the default renderer for Plotly. Show a preview of the patches that will be used in the analysis
-    pio.renderers.default = 'browser'
-    if show_preview:
-        print('Showing preview...')
-        explorer = dataExplorer()
-        explorer.show_input(true_files, false_files, frac)
-
-    test_results = pd.DataFrame([])
-    for i in range (iterations):
-        print(f'\n\n---------Working on iteration {i}---------')
-        # process each fold in parallel
-        test_results_fold = Parallel(n_jobs=n_jobs, backend='loky')( 
-            delayed(train_model)(fold_num, IDs[train_index], IDs[test_index], true_files,
-                                  false_files, i, frac, random_state, output_dir, square_size=square_size, show_training=False, epochs=epochs,
-                                    batch_size=batch_size, learning_rate=0.001, use_resnet=False)
-            for fold_num, (train_index, test_index) in enumerate(kf.split(IDs))
-        )
-        test_results_iteration = pd.concat(test_results_fold, ignore_index=True)
-
-        # Add all of testing results one dataframe
-        test_results = pd.concat([test_results, test_results_iteration])        # test_results = train_model(train_true, train_false, test_true, test_false, frac, use_resnet=True)
-
-    print('Saving and plotting results...')
-    test_results.to_csv(output_dir / 'test_outputs.csv')
-    print(f'Test results saved to {output_dir / 'test_outputs.csv'}')
-    plot_bar(test_results)
-    plot_img_results(test_results, output_dir, save_img, square_size)
-
-    end_time = time.time()
-    print(f'Done with Training \n Total time: {end_time - start_time}')
+    for parameter_dict in parameter_dicts:
+        instance = CNN_pipeline(**parameter_dict)
+        instance.run()  # Run the CNN pipeline
 
     print('All done')
