@@ -427,7 +427,21 @@ def test(test_dataloader, model, device, output_dir, fold_num, i, to_save=False)
 def train_model(fold_num, train_IDs, test_IDs, true_files,
                                   false_files, i, frac, random_state, output_dir, square_size, show_training=False, epochs=2,
                                     batch_size=16, learning_rate=0.001, use_resnet=False):
-    
+    '''function to train model
+    Args: 
+        fold_num: what number fold to be on
+        train_IDs: what training IDs to use
+        test_IDs: what testing IDs to use
+        true_files: files in true category
+        false_files: files in false category
+        i: what number itereation
+        frac: what percentage of samples to include
+        random_state: number for randomization
+        output_dir: what directory to save to
+        square_size: size of patches
+        show_training: whether to show training loss and testing accuracy after trainin
+    '''
+
     print(f'\nWorking on fold {fold_num}')
     
     # Find the files for training and testing. Return a file if its ID is in the train_IDs (or testing IDs)
@@ -449,6 +463,7 @@ def train_model(fold_num, train_IDs, test_IDs, true_files,
     device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
     pin_memory = False if device.type == "mps" else True  # Disable pin_memory for MPS
 
+    # Have dataset and data loader
     train_dataloader = DataLoader(
         train_dataset, 
         batch_size=batch_size, 
@@ -466,6 +481,7 @@ def train_model(fold_num, train_IDs, test_IDs, true_files,
         shuffle=True, 
     )
 
+    # Which model to use
     if use_resnet:
         model = ResNet2D(input_channels=true_data_train[0][0].shape[0])
         print(f'Input channels = {true_data_train[0][0].shape[0]}')
@@ -480,6 +496,7 @@ def train_model(fold_num, train_IDs, test_IDs, true_files,
     epoch_losses = []
     epoch_acc = []
 
+    # Training loop
     for epoch in range(epochs):
         model.train()
         epoch_loss = 0
@@ -521,6 +538,11 @@ def train_model(fold_num, train_IDs, test_IDs, true_files,
     return test_results
 
 def bootstrapp(series, CI=95):
+    '''
+    bootstraps to make error bars 
+    Args:
+        series: list of numbers to bootstrap
+    '''
     series = np.array(series)
     means = []
     for i in range(1000):
@@ -535,6 +557,7 @@ def bootstrapp(series, CI=95):
     return lower_value, upper_value
 
 class CNN_pipeline:
+    '''main CNN pipeline'''
     def __init__(self, true_path, false_path, show_preview, frac, random_state, n_jobs, iterations, n_splits, epochs, batch_size, save_img, square_size, show_training, data_config):
         self.true_path = true_path
         self.false_path = false_path
@@ -576,6 +599,7 @@ class CNN_pipeline:
             'Round 1 & 2: peripheral or edemafalse': (1, 2, 5, 6, 7, 8, 9, 10, 13, 14, 19, 21, 24, 27, 29, 30, 31, 32, 33, 35, 37, 38, 39, 40, 41, 42, 43, 46, 47, 48, 49, 51, 53, 54, 55, 56, 57, 58, 60, 62, 63, 64, 65, 66, 67, 68, 69, 71, 72),
             'Round 1, 2, & 3: cellulitis/edemafalse + controls': (11, 12, 15, 18, 20, 22, 23, 26, 34, 36, 45, 59, 61, 70, 73, 76, 78, 83, 84, 85, 86, 88, 89, 90, 91),
             'Round 1, 2, & 3: peripheral/edemafalse + controls': (1, 2, 5, 6, 7, 8, 9, 10, 13, 14, 19, 21, 24, 27, 29, 30, 31, 32, 33, 35, 37, 38, 39, 40, 41, 42, 43, 46, 47, 48, 49, 51, 53, 54, 55, 56, 57, 58, 60, 62, 63, 64, 65, 66, 67, 68, 69, 71, 72, 74, 75, 77, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90, 91), 
+            'All': tuple([i for i in range(100)])
         }
         true_IDs = [ID for ID in true_IDs if ID in data_configs[self.data_config]]
         IDs = true_IDs + false_IDs
@@ -650,16 +674,17 @@ if __name__ == '__main__':
                   'frac': 0.01, # Fraction of squares to include in the analysis
                   'random_state': np.random.randint(0, 4294967295), # Seed to randomize the input. For reproducability use a number like 42, otherwise use np.random.randint(0, 4294967295)
                   'n_jobs': -1, # -1 uses as many CPUs as there are available. Positive numbers reflect the number of CPUs used
-                  'iterations': 3, # Number of iterations to run the entire model 
+                  'iterations': 1, # Number of iterations to run the entire model 
                   'n_splits': 'ID', # 'ID' if the number of splits are the same as the number of IDs. Otherwise provide a number greater than 2
                   'epochs': 10, # Number of epochs to train the model
                   'batch_size': 16, # Batch size for training
                   'save_img': True, # Whether or not to save the images with correct and incorrect predictions
                   'square_size': 5, # Size of the square patches to extract from the hyperspectral images
-                  'show_training': True, # Whether or not to plot accuracy over epochs
-                  'data_config': 'Round 1, 2, & 3: peripheral/edemafalse + controls', # What data to include. The keys of data_configs are the options for what can be put here.
+                  'show_training': False, # Whether or not to plot accuracy over epochs
+                  'data_config': 'All', # What data to include. The keys of data_configs are the options for what can be put here.
                   }] 
 
+    # Loop over all of the possible sets of parameters
     for parameter_dict in parameter_dicts:
         instance = CNN_pipeline(**parameter_dict)
         instance.run()  # Run the CNN pipeline
