@@ -1,5 +1,11 @@
 ### Classify hyperspectral images using a CNN
-# How to use: set the true_path and the false_path filepaths to the folders containing the numpy file of the hypercube
+# Inputs: set the true_path and the false_path filepaths to the folders containing the numpy file of the hypercube. Set the parameters in parameter_dicts
+# Outputs: 
+    # Preview of selected patches on an example edemaTrue and edemaFalse image
+    # copy of the script
+    # folder called maps which contains all of the testing images overlaid with correct predictions in green and incorrect predictions in red
+    # test_outputs.csv which contains the metadata of each patch and if it was correctly classified
+    # training_loss.png which shows the loss and accuracy over epochs
 
 import numpy as np
 import random
@@ -369,6 +375,7 @@ class HypercubeDataset(Dataset):
         return self.samples[idx]
 
 class CNN(nn.Module):
+    '''Creates the colvolutional network. It inherits from nn.Module which is the base class for all neural networks in PyTorch'''
     def __init__(self, input_channels):
         super(CNN, self).__init__()
         self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, stride=1, padding=1)
@@ -383,6 +390,7 @@ class CNN(nn.Module):
         return x
 
 class ResNet2D(nn.Module):
+    '''Creates the 2 dimensional residual network'''
     def __init__(self, input_channels):
         super(ResNet2D, self).__init__()
         self.resnet = models.resnet18()
@@ -455,13 +463,13 @@ def train_model(fold_num, train_IDs, test_IDs, true_files,
         print(f"Skipping fold {fold_num}: Not enough samples in one of the classes. len(true)={len(train_true)} len(false)={len(train_false)}")
         return pd.DataFrame([])
 
+    # Create training dataset from HypercubeDataset class
     true_data_train = HypercubeDataset(train_true, frac, label=1, square_size=square_size)
     false_data_train = HypercubeDataset(train_false, frac, label=0, square_size=square_size)
     train_dataset = torch.utils.data.ConcatDataset([true_data_train, false_data_train])
 
     # Determine device and adjust DataLoader settings
     device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
-    pin_memory = False if device.type == "mps" else True  # Disable pin_memory for MPS
 
     # Have dataset and data loader
     train_dataloader = DataLoader(
@@ -471,6 +479,7 @@ def train_model(fold_num, train_IDs, test_IDs, true_files,
         drop_last=True, # Drop last batch so we don't get an error
     )
 
+    # Create testing dataaset and dataloader
     true_data_test = HypercubeDataset(test_true, frac=frac, label=1, square_size=square_size) # Assign 1 as the true label
     false_data_test = HypercubeDataset(test_false, frac=frac, label=0, square_size=square_size) # Assign 0 as the false label
     test_dataset = torch.utils.data.ConcatDataset([true_data_test, false_data_test])
@@ -532,8 +541,8 @@ def train_model(fold_num, train_IDs, test_IDs, true_files,
         fig.write_image(output_dir / f"training_loss_fold{fold_num}.png")
         fig.show()
 
+    # Test model on the test dataset 
     print(f'Training complete, now testing...')
-
     test_results = test(test_dataloader, model, device, output_dir, fold_num, i, to_save=False)
     return test_results
 
@@ -668,6 +677,7 @@ class CNN_pipeline:
 
 
 if __name__ == '__main__':
+    # Set the list of parameters. If you want to run multiple models, make multiple dictionaries within the list parameter_dicts and they will run serialy in the order given by list.
     parameter_dicts = [{'true_path': Path('/Users/cameronmay/Documents/HSI/npy/Round 3 all/EdemaTrueCrops RGB 7-14-2025Npy'), 
                   'false_path': Path('/Users/cameronmay/Documents/HSI/npy/Round 3 all/EdemaFalseCrops RGB 7-14-2025Npy'), 
                   'show_preview': True, # Set to True to show the data explorer preview
@@ -689,4 +699,4 @@ if __name__ == '__main__':
         instance = CNN_pipeline(**parameter_dict)
         instance.run()  # Run the CNN pipeline
 
-    print('All done')
+    print('All done :)')
